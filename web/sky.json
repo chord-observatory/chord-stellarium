@@ -1,0 +1,13 @@
+{
+ "map": "Haslam et al. 1982, 408 MHz; destriped by Remazeilles et al. 2015",
+ "file": "haslam408_ds_Remazeilles2014.fits",
+ "nside": 512,
+ "frame": "ICRS",
+ "projection": "plate carree; x: RA 0..360 increasing; y: Dec +90..-90",
+ "width": 2048,
+ "height": 1024,
+ "freq_mhz": 408.0,
+ "log10_t_lo": 1.04,
+ "log10_t_hi": 3.68,
+ "bad_pixels": 0
+}

@@ -1,0 +1,48 @@
+{
+  "_comment": "Hand-kept facts for the observatory page. Positions are ICRS (J2000) degrees. catalog.json is generated (observatory/build_catalog.py); this file is edited by hand.",
+  "site": {
+    "name": "DRAO, Penticton, BC",
+    "lat": 49.32075144444,
+    "lon": -119.62081125,
+    "height_m": 545.0,
+    "tz": "America/Vancouver"
+  },
+  "array": {
+    "_comment": "8 x 8 grid: columns 01-08 run east-west 6.3 m apart, rows A-H north-south 8.5 m apart. HPBW scales as 1/f from the 300 MHz value (choco's skymap job uses the same).",
+    "nx": 8,
+    "ny": 8,
+    "dx_m": 6.3,
+    "dy_m": 8.5,
+    "dish_diameter_m": 6.0,
+    "hpbw_deg_at_300mhz": 11.5
+  },
+  "band_mhz": [150, 1600],
+  "default_band_mhz": [400, 800],
+  "pointings": [
+    { "id": "taua", "label": "Tau A", "source": "Tau A", "note": "All dishes since 2026-10-24." },
+    { "id": "cyga", "label": "Cyg A", "source": "Cyg A", "note": "Before 2026-10-17, and the A-B rows to 2026-10-23." }
+  ],
+  "default_pointing": "taua",
+  "calibrators": [
+    { "name": "Cyg A", "ra": 299.86815, "dec": 40.73392, "kind": "radio galaxy", "alias": "3C 405" },
+    { "name": "Cas A", "ra": 350.86642, "dec": 58.81178, "kind": "supernova remnant", "alias": "3C 461" },
+    { "name": "Tau A", "ra": 83.63308, "dec": 22.01450, "kind": "supernova remnant (Crab Nebula)", "alias": "3C 144" },
+    { "name": "Vir A", "ra": 187.70593, "dec": 12.39112, "kind": "radio galaxy (M87)", "alias": "3C 274" },
+    { "name": "Sgr A*", "ra": 266.41683, "dec": -29.00781, "kind": "the Galactic centre" }
+  ],
+  "dumps": [
+    {
+      "name": "20261030T105920Z_merged",
+      "utc": "2026-10-30T10:59:20Z",
+      "pointing": "taua",
+      "note": "Baseband dump at the Tau A transit. Crab giant pulses, B0540+23 in a steered beam."
+    },
+    {
+      "name": "20261029T170000Z_merged",
+      "utc": "2026-10-29T17:00:00Z",
+      "pointing": "taua",
+      "note": "Daytime baseband dump. B1133+16 is about 6 deg south (not detected)."
+    }
+  ],
+  "highlight_pulsars": ["B0531+21", "B0525+21", "B0540+23", "B1133+16"]
+}
