@@ -3,7 +3,8 @@
 
 Writes astro_ref.json on stdout: for each test time, the local apparent
 sidereal time at the site, and the topocentric altitude and azimuth
-(no refraction) of the Sun, the Moon and a few fixed ICRS sources.
+(no refraction) of the Sun, the Moon, the planets and a few fixed ICRS
+sources.
 test_astro.mjs reads it.
 
 Runs in choco's venv (astropy, offline IERS tables are fine: UT1-UTC
@@ -40,6 +41,8 @@ SOURCES = {
     "Polaris": (37.95456, 89.26411),
 }
 
+PLANETS = ["Mercury", "Venus", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune"]
+
 TIMES = [
     "2000-01-01T12:00:00", "2010-06-21T03:30:00", "2020-03-15T18:45:10",
     "2026-10-29T17:00:00", "2026-10-30T10:59:20", "2026-11-15T06:00:00",
@@ -66,6 +69,11 @@ def main():
             aa = get_body(name, t, site).transform_to(frame)
             rec[name] = {"alt": float(aa.alt.deg), "az": float(aa.az.deg),
                          "dist_km": float(aa.distance.to(u.km).value)}
+        rec["planets"] = {}
+        for name in PLANETS:
+            aa = get_body(name.lower(), t, site).transform_to(frame)
+            rec["planets"][name] = {"alt": float(aa.alt.deg), "az": float(aa.az.deg),
+                                    "dist_au": float(aa.distance.to(u.au).value)}
         aa = src.transform_to(frame)
         rec["sources"] = {n: {"alt": float(a), "az": float(z)}
                           for n, a, z in zip(SOURCES, aa.alt.deg, aa.az.deg)}

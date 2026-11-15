@@ -43,7 +43,8 @@ pointing.
   `astro_ref.json`.
 - `test_astro.mjs`: checks `astro.js` against `astro_ref.json` (node; cx69
   has it). Tolerances are in the file. On 2026-11-15: sources 25",
-  Sun 27", Moon 11", LST within UT1-UTC.
+  Sun 27", Moon 11", planets 1.8' (Jupiter and Saturn 10': JPL's mean
+  elements leave out their great inequality), LST within UT1-UTC.
 - `shots.mjs`: screenshots in headless Chrome, with console errors. Needs
   puppeteer in a scratch directory on cx69 (it has Chrome's libraries):
 

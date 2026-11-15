@@ -17,6 +17,7 @@ const LAYERS = [
   ["pulsars", "Pulsars", true, "#7fdfff"],
   ["dumps", "Baseband dumps", true, "#ff86d8"],
   ["sunmoon", "Sun and Moon", true, "#ffe08a"],
+  ["planets", "Planets", true, "#eed8b2"],
   ["strip", "Drift strip", true, "#ffffff"],
   ["trace", "Drift trace", true, "rgb(255,205,120)"],
   ["horizon", "Horizon", true, "rgb(150,220,175)"],
@@ -197,7 +198,8 @@ function computeFrame() {
   const boreEnu = A.boresightEnu(site.site, decBore);
   const boreJ2000 = A.apply(ob.fromEnu, boreEnu);
   const sunAlt = A.altaz(sun.enu)[1];
-  return { ob, sun, moon, phase, decBore, boreEnu, boreJ2000, sunAlt, day: smooth(-12, 4, sunAlt) };
+  const planets = A.planets(ob).map((p) => ({ ...p, obj: { type: "planet", name: p.name, v: p.j2000, au: p.au } }));
+  return { ob, sun, moon, phase, planets, decBore, boreEnu, boreJ2000, sunAlt, day: smooth(-12, 4, sunAlt) };
 }
 
 let monthsCache = { year: null, list: [] };
@@ -251,6 +253,7 @@ function render() {
     cam, dpr, ob: frame.ob, zoom, layers: { ...st.layers, beam: st.beamMode !== "off" }, data, skyline,
     dome: onSite, ground: v.kind === "ground", day: frame.day, sun: frame.sun, moon: frame.moon, phase: frame.phase,
     sunObj: { type: "sun", name: "Sun", v: frame.sun.j2000 }, moonObj: { type: "moon", name: "Moon", v: frame.moon.j2000 },
+    planets: frame.planets,
     decBore: frame.decBore, boreJ2000: frame.boreJ2000, band: st.band, array: site.array,
     sunMonths: sunMonths(st.t), clock: hhmm, selected: st.selected,
     lon0Label: centre ? A.lonlat(centre)[0] : 0,
@@ -340,6 +343,7 @@ function bandFacts() {
 
 function tagFor(o) {
   return { calibrator: ["cal", "t-cal"], "3crr": ["3C", "t-src"], pulsar: ["PSR", "t-psr"], dump: ["dump", "t-dump"],
+    planet: ["planet", "t-planet"],
     sun: ["Sun", "t-sun"], moon: ["Moon", "t-moon"], star: ["star", "t-star"] }[o.type];
 }
 const tagHtml = (o) => { const [t, c] = tagFor(o); return `<span class="tag ${c}">${t}</span>`; };
@@ -352,6 +356,7 @@ function candidates() {
     ...data.pulsars.filter((p) => p.highlight || p.flux >= 20).map((p) => p.obj),
     { type: "sun", name: "Sun", v: frame.sun.j2000 },
     { type: "moon", name: "Moon", v: frame.moon.j2000 },
+    ...frame.planets.map((p) => p.obj),
   ];
 }
 
@@ -444,6 +449,7 @@ function card(o) {
   const ob = frame.ob, el = $("card"), fc = fCentre();
   if (o.type === "sun") o.v = frame.sun.j2000;           // they move: follow the current frame
   if (o.type === "moon") o.v = frame.moon.j2000;
+  if (o.type === "planet") Object.assign(o, frame.planets.find((p) => p.name === o.name).obj);
   const [ra, dec] = A.lonlat(o.v);
   const [az, alt] = A.altaz(A.apply(ob.toEnu, o.v));
   const off = A.sepDeg(o.v, frame.boreJ2000);
@@ -474,6 +480,10 @@ function card(o) {
   }
   if (o.type === "sun") kind = `Altitude ${fmt(alt, 1)}°`;
   if (o.type === "moon") kind = `${Math.round(frame.phase.illuminated * 100)}% illuminated · altitude ${fmt(alt, 1)}°`;
+  if (o.type === "planet") {
+    kind = "Planet";
+    rows.push(["Distance", `${fmt(o.au, 3)} au · light ${fmt((o.au * 499.005) / 60, 1)} min`]);
+  }
   rows.push(["RA, Dec (J2000)", `${hms(ra)}, ${decStr}`]);
   rows.push(["Alt, az now", `${fmt(alt, 1)}°, ${fmt(az, 1)}°`]);
   rows.push(["Next transit", `${hhmm(st.t + dt)} (${inWords(dt)})`]);
@@ -607,10 +617,12 @@ function wireControls() {
   data.sources3c.forEach((s) => add(s.obj));
   data.pulsars.forEach((p) => { add(p.obj); if (p.jname !== p.name) names.set(p.jname, p.obj); });
   data.stars.forEach((s) => add(s.obj));
-  $("names").innerHTML = ["Sun", "Moon", ...names.keys()].map((n) => `<option value="${esc(n)}">`).join("");
+  $("names").innerHTML = ["Sun", "Moon", ...A.PLANETS, ...names.keys()].map((n) => `<option value="${esc(n)}">`).join("");
   $("search").onchange = (e) => {
     const q = e.target.value.trim();
-    const o = q === "Sun" ? { type: "sun", name: "Sun", v: frame.sun.j2000 } : q === "Moon" ? { type: "moon", name: "Moon", v: frame.moon.j2000 } : names.get(q);
+    const planet = frame.planets.find((p) => p.name === q);
+    const o = q === "Sun" ? { type: "sun", name: "Sun", v: frame.sun.j2000 } : q === "Moon" ? { type: "moon", name: "Moon", v: frame.moon.j2000 }
+      : planet ? planet.obj : names.get(q);
     if (o) { select(o, true); e.target.value = ""; e.target.blur(); }
   };
 
@@ -799,6 +811,8 @@ function credits() {
     `Stars and constellations: ${cat.credits.stars}. Licence below.`,
     ...(horizon.flat ? [] : [`Skyline: computed from ${horizon.source} (https://registry.opendata.aws/terrain-tiles/).`]),
     "Positions of the Sun and the Moon: J. Meeus, Astronomical Algorithms, 2nd ed. (1998); precession IAU 1976. Checked against astropy.",
+    "Planets: E. M. Standish, Keplerian Elements for Approximate Positions of the Major Planets (JPL), valid 1800–2050; within 2′ of astropy, Jupiter and Saturn within 10′.",
+    "The drift trace's Sun is a quiet Sun of about 25 sfu at 400 MHz, rising as f^0.8, seen through the main lobe only. The active Sun is a few times brighter, and bursts far more.",
     "Cosmology: flat ΛCDM with H₀ = 67.66 km/s/Mpc and Ωm = 0.3111 (Planck 2018).",
     "The beam is a model: a Gaussian main lobe for each dish, times the array factor of an ideal 8 × 8 grid. The real beam has sidelobes and errors not shown here.",
     `Catalogue built ${cat.generated}.`,

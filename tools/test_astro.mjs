@@ -5,7 +5,9 @@
 // Exits 1 if any position is off by more than its tolerance.  Tolerances:
 // sidereal time 0.5 s (astro.js takes UT1 as UTC; astropy uses the IERS
 // UT1-UTC), fixed sources 30" (astro.js leaves out aberration), the Sun
-// 0.01 deg and the Moon 0.05 deg and 100 km (truncated series).
+// 0.01 deg, the Moon 0.05 deg and 100 km (truncated series), the planets
+// 0.05 deg, Jupiter and Saturn 0.2 deg (JPL's mean elements leave out
+// their great inequality; the table quotes errors of 400" and 600").
 
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -19,12 +21,12 @@ const SOURCES = {
   "Tau A": [83.63308, 22.01450], "Cyg A": [299.86815, 40.73392], "Cas A": [350.86642, 58.81178],
   "Vir A": [187.70593, 12.39112], "Sgr A*": [266.41683, -29.00781], "Polaris": [37.95456, 89.26411],
 };
-const TOL = { lst: 7.5 / 3600, source: 30 / 3600, sun: 0.01, moon: 0.05 };
+const TOL = { lst: 7.5 / 3600, source: 30 / 3600, sun: 0.01, moon: 0.05, planet: 0.05, giant: 0.2 };
 
 // Angular distance between two (az, alt) pairs, degrees.
 const offset = (az1, alt1, az2, alt2) => A.sepDeg(A.enuFromAltaz(az1, alt1), A.enuFromAltaz(az2, alt2));
 
-const worst = { lst: 0, source: 0, sun: 0, moon: 0 };
+const worst = { lst: 0, source: 0, sun: 0, moon: 0, planet: 0, giant: 0 };
 let failed = 0;
 const check = (kind, what, err) => {
   worst[kind] = Math.max(worst[kind], err);
@@ -49,6 +51,11 @@ for (const t of ref.times) {
   check("moon", `${t.utc} Moon`, offset(maz, malt, t.moon.az, t.moon.alt));
   const dkm = Math.abs(m.topoKm - t.moon.dist_km);
   if (dkm > 100) { failed++; console.log(`FAIL ${t.utc} Moon distance off by ${dkm.toFixed(0)} km`); }
+  for (const p of A.planets(ob)) {
+    const r = t.planets[p.name], [paz, palt] = A.altaz(p.enu);
+    const kind = p.name === "Jupiter" || p.name === "Saturn" ? "giant" : "planet";
+    check(kind, `${t.utc} ${p.name}`, offset(paz, palt, r.az, r.alt));
+  }
 }
 
 for (const [k, v] of Object.entries(worst)) console.log(`worst ${k}: ${(v * 3600).toFixed(2)}"`);

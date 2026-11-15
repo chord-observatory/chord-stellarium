@@ -32,6 +32,12 @@ export const COLORS = {
   select: "#ffffff",
 };
 
+// Each planet's marker: its colour and radius (px), roughly by brightness.
+const PLANET_STYLE = {
+  Mercury: ["#c4beb4", 2.6], Venus: ["#f6ecca", 4.2], Mars: ["#ec7c55", 3.3], Jupiter: ["#eed8b2", 4.0],
+  Saturn: ["#e8d290", 3.4], Uranus: ["#a4e6e8", 2.6], Neptune: ["#86adff", 2.4],
+};
+
 // Tints for the band edges, matching skygl.js's bandTint at s = 0 and 1.
 export const LOW_TINT = "rgb(255,92,74)", HIGH_TINT = "rgb(196,92,255)";
 
@@ -120,6 +126,7 @@ export class Overlay {
     if (L.sources) this.sources();
     if (L.pulsars) this.pulsars();
     if (L.dumps) this.dumps();
+    if (L.planets) this.planets();
     if (L.sunmoon) this.sunMoon();
     if (L.beam || L.strip) this.beamOutline();
     if (S.selected) this.selection(S.selected);
@@ -309,6 +316,25 @@ export class Overlay {
         ctx.beginPath(); ctx.moveTo(x, y - 7); ctx.lineTo(x + 7, y); ctx.lineTo(x, y + 7); ctx.lineTo(x - 7, y); ctx.closePath(); ctx.stroke();
         this.hit(x, y, 9, d.obj);
         if (S.layers.labels) this.labels.add(d.label, x, y, { prio: 70, color: COLORS.dump, gap: 11 });
+      });
+    }
+  }
+
+  planets() {
+    const { ctx } = this, S = this.S, fade = S.dome ? 1 - 0.55 * S.day : 1;
+    for (const p of S.planets) {
+      const [color, r] = PLANET_STYLE[p.name];
+      this.at(p.j2000, (x, y) => {
+        ctx.globalAlpha = fade;
+        ctx.fillStyle = color;
+        ctx.beginPath(); ctx.arc(x, y, r, 0, 2 * Math.PI); ctx.fill();
+        if (p.name === "Saturn") {
+          ctx.strokeStyle = color; ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.ellipse(x, y, r * 2.1, r * 0.75, -0.35, 0, 2 * Math.PI); ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+        this.hit(x, y, r + 3, p.obj);
+        if (S.layers.labels) this.labels.add(p.name, x, y, { prio: 92, color, font: "600 11px var(--font)", gap: r + 5 });
       });
     }
   }
