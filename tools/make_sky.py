@@ -17,9 +17,9 @@ host it runs on:
 
   ssh choco.site.chord-observatory.ca \\
     'env -u HDF5_PLUGIN_PATH /opt/choco/.venv/bin/python - \\
-       /opt/choco/jobs/skymap/haslam408_ds_Remazeilles2014.fits' \\
+       /opt/choco/jobs/mapmaker/haslam408_ds_Remazeilles2014.fits' \\
     < tools/make_sky.py > sky.out.json
-  python3 tools/unpack_sky.py sky.out.json web
+  python3 tools/unpack_sky.py sky.out.json docs
 """
 
 import base64
