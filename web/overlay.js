@@ -96,9 +96,10 @@ export class Overlay {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, cam.w, cam.h);
     this.S = S;
-    // In the ground and dome views, the terrain hides what is below the skyline.
+    // In the ground and dome views, the terrain hides what is below the
+    // skyline, unless the Horizon layer is off (the ground is see-through).
     const T = S.ob.toEnu;
-    this.hidden = S.dome ? (v) => {
+    this.hidden = S.dome && S.layers.horizon ? (v) => {
       const e = apply(T, v);
       if (e[2] > 0.25) return false;                        // above every hill: skip the lookup
       return Math.asin(Math.max(-1, e[2])) / DEG < S.skyline(Math.atan2(e[0], e[1]) / DEG) - 0.05;

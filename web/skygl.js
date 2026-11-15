@@ -37,8 +37,9 @@ uniform mat3 uToEnu;        // J2000 -> ENU
 uniform vec2 uStretch;      // texture value shown as black and as white
 uniform float uSkyGain;
 uniform float uDay;         // 0 night .. 1 full day (ground and dome views)
-uniform float uDome;        // 1 in the ground and dome views: the ground is opaque
-uniform float uGround;      // charts: dim the sky below the skyline
+uniform float uDome;        // 1 in the ground and dome views, 0 in charts
+uniform float uGround;      // the Horizon layer: the ground is opaque (ground, dome) or the
+                            // sky below the skyline dimmed (charts); off, the sky shows through
 uniform sampler2D uHz;      // skyline: per azimuth step, altitude in 16 bits (R, G)
 uniform float uHzN;
 uniform vec3 uBore;         // beam centre, ENU
@@ -171,7 +172,7 @@ void main() {
     col += uDay * mix(vec3(0.05, 0.11, 0.24), vec3(0.16, 0.24, 0.36), air * air);
   }
   if (uBeamMode > 0) col += beam(e) * uBeamGain;
-  if (below) {
+  if (below && uGround > 0.5) {
     if (uDome > 0.5) {
       // The ground: darker downward, with a band of haze along the skyline
       // (the same in every direction: below the skyline the distance to
@@ -183,7 +184,7 @@ void main() {
       float haze = exp(-(hz - alt) / 1.2);
       g = mix(g, mix(vec3(0.06, 0.08, 0.11), vec3(0.42, 0.50, 0.58), uDay), 0.35 * haze);
       col = g;
-    } else if (uGround > 0.5) col *= 0.5;
+    } else col *= 0.5;
   }
   gl_FragColor = vec4(col, 1.0);
 }
