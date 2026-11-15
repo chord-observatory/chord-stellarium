@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The terrain skyline around the site, for the observatory page.
 
-  python3 make_horizon.py <webroot>/observatory/horizon.json [--cache DIR]
+  python3 tools/make_horizon.py web/horizon.json [--cache DIR]
 
 Stdlib only, so it runs on chord-gateway.  Downloads SRTM 1-arcsecond
 tiles (AWS Terrain Tiles, "skadi" HGT format) around the site and, for

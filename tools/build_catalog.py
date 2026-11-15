@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the observatory's catalog.json from public catalogues.
 
-  python3 build_catalog.py <webroot>/observatory/catalog.json [--cache DIR]
+  python3 tools/build_catalog.py web/catalog.json [--cache DIR]
 
 Stdlib only, so it runs on chord-gateway.  It downloads:
 

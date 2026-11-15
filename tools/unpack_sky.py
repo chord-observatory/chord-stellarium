@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Write make_sky.py's output as sky.png and sky.json in a directory.
 
-  python3 unpack_sky.py sky.out.json <webroot>/observatory
+  python3 tools/unpack_sky.py sky.out.json web
 
 Stdlib only, so it runs on chord-gateway.
 """

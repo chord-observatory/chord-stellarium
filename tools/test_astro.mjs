@@ -1,6 +1,6 @@
 // Check the page's astro.js against astropy (astro_ref.json, from astro_ref.py).
 //
-//   node test_astro.mjs <webroot>/observatory/astro.js astro_ref.json
+//   node tools/test_astro.mjs web/astro.js tools/astro_ref.json
 //
 // Exits 1 if any position is off by more than its tolerance.  Tolerances:
 // sidereal time 0.5 s (astro.js takes UT1 as UTC; astropy uses the IERS

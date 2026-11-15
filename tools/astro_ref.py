@@ -12,7 +12,7 @@ is under a second):
 
   ssh choco.site.chord-observatory.ca \\
     'env -u HDF5_PLUGIN_PATH /opt/choco/.venv/bin/python -' \\
-    < astro_ref.py > astro_ref.json
+    < tools/astro_ref.py > tools/astro_ref.json
 """
 
 import json

@@ -1,5 +1,5 @@
 {
-  "_comment": "Hand-kept facts for the observatory page. Positions are ICRS (J2000) degrees. catalog.json is generated (observatory/build_catalog.py); this file is edited by hand.",
+  "_comment": "Hand-kept facts for the observatory page. Positions are ICRS (J2000) degrees. catalog.json is generated (tools/build_catalog.py); this file is edited by hand.",
   "site": {
     "name": "DRAO, Penticton, BC",
     "lat": 49.32075144444,
