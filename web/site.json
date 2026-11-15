@@ -8,7 +8,7 @@
     "tz": "America/Vancouver"
   },
   "array": {
-    "_comment": "8 x 8 grid: columns 01-08 run east-west 6.3 m apart, rows A-H north-south 8.5 m apart. HPBW scales as 1/f from the 300 MHz value (choco's skymap job uses the same).",
+    "_comment": "8 x 8 grid: columns 01-08 run east-west 6.3 m apart, rows A-H north-south 8.5 m apart. HPBW scales as 1/f from the 300 MHz value (as choco's retired skymap job did).",
     "nx": 8,
     "ny": 8,
     "dx_m": 6.3,
