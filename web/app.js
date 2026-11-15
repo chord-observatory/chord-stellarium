@@ -1,7 +1,7 @@
 // The observatory page: state, controls, the render loop and the panels.
 
 import * as A from "./astro.js";
-import { makeCamera, unproject, toPlane, MOLL, CAR } from "./proj.js";
+import { makeCamera, fitScale, unproject, toPlane, STEREO, MOLL, CAR } from "./proj.js";
 import { SkyGL } from "./skygl.js";
 import { Overlay, drawPulsarBlink, setFont, COLORS } from "./overlay.js";
 import { Trace } from "./trace.js";
@@ -29,18 +29,22 @@ const LAYERS = [
 const SPEEDS = [1, 60, 600, 3600, 21600];
 const SKY_STRETCH = [0.06, 0.86];       // sky.png values shown as black and as white
 const PANEL_W = 336, TRACE_H = 120;
+// Where each camera view starts: facing south (the beam), at the horizon
+// or the zenith.  The ground view's tilt (null here) depends on the beam.
+const AIM = { ground: { az0: 180, alt0: null }, dome: { az0: 180, alt0: 90 } };
+const GROUND_FOV = 100;                  // degrees across the free area at the ground view's start
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 const st = {
   live: true, t: Date.now(), playing: true, speed: 1,
   pointing: null, customDec: null,
-  view: { kind: "dome", proj: MOLL, frame: "eq", az0: 180, alt0: 90, lon0: 0, zoom: 1, pan: [0, 0], w: 0, h: 0 },
+  view: { kind: "ground", proj: MOLL, frame: "eq", az0: 180, alt0: null, lon0: 0, zoom: null, pan: [0, 0], w: 0, h: 0 },
   band: [400, 800], beamMode: "dish", skyGain: 0.85,
   layers: Object.fromEntries(LAYERS.map(([k, , on]) => [k, on])),
   selected: null,
 };
 
-let site, cat, skyMeta, gl, overlay, trace, data, cam, frame, dpr = 1;
+let site, cat, skyMeta, horizon, gl, overlay, trace, data, cam, frame, dpr = 1;
 let dirty = true, lastDraw = 0, lastPanels = 0, lastHash = 0, hits = [], blink = [];
 const nameIndex = new Map();             // search names -> objects
 
@@ -51,8 +55,17 @@ async function load() {
   const img = new Image();
   const imgLoaded = new Promise((ok, bad) => { img.onload = ok; img.onerror = () => bad(new Error("sky.png did not load")); });
   img.src = "sky.png";
-  [site, cat, skyMeta] = await Promise.all([get("site.json"), get("catalog.json"), get("sky.json"), imgLoaded]);
+  // The skyline is optional: without it the horizon is flat.
+  const flat = { alt_deg: new Array(720).fill(0), dist_km: new Array(720).fill(0), step_deg: 0.5, flat: true };
+  [site, cat, skyMeta, horizon] = await Promise.all([get("site.json"), get("catalog.json"), get("sky.json"),
+    get("horizon.json").catch(() => flat), imgLoaded]);
   return img;
+}
+
+/** Altitude (deg) of the terrain skyline at azimuth az (deg from north through east). */
+function skyline(az) {
+  const a = horizon.alt_deg, n = a.length, x = (A.mod360(az) / 360) * n, i = Math.floor(x) % n, f = x - Math.floor(x);
+  return a[i] + f * (a[(i + 1) % n] - a[i]);
 }
 
 function buildData() {
@@ -197,20 +210,46 @@ function sunMonths(ms) {
   return monthsCache.list;
 }
 
+/** The span of altitude the ground view starts on: from just below the
+ *  southern skyline to above the beam (63 deg up for Tau A, 81 for Cyg A). */
+function groundSpan() {
+  const beamAlt = 90 - Math.abs(site.site.lat - pointingDec(A.observer(st.t, site.site)));
+  return [skyline(180) - 4, Math.min(beamAlt + 8, 95)];
+}
+
+/** Start of a camera view; the ground view is centred on groundSpan(). */
+function aim(kind) {
+  const a = { ...AIM[kind] };
+  if (a.alt0 == null) { const [lo, hi] = groundSpan(); a.alt0 = Math.round((lo + hi) / 2); }
+  return a;
+}
+
+/** The ground view starts GROUND_FOV wide across the free area, or wider if
+ *  groundSpan() needs it; the other views fit the whole sky. */
+function defaultZoom(kind) {
+  if (kind !== "ground") return 1;
+  const v = st.view, iw = v.w - (v.insetL || 0), ih = v.h - (v.insetB || 0);
+  const [lo, hi] = groundSpan();
+  const across = iw / (4 * Math.tan((GROUND_FOV / 4) * A.DEG));        // stereographic: x = 2 tan(theta / 2)
+  const upDown = ih / (4 * Math.tan(((hi - lo) / 4) * A.DEG));
+  return Math.min(across, upDown) / fitScale(STEREO, iw, ih);
+}
+
 function render() {
   frame = computeFrame();
-  const v = st.view;
+  const v = st.view, onSite = v.kind !== "chart";
+  if (v.zoom == null) v.zoom = defaultZoom(v.kind);
   cam = makeCamera(v, frame.ob);
   const zoom = cam.s / 180;            // detail level: pixels per radian against a desktop's full view
   gl.draw({
     cam, ob: frame.ob, dpr, stretch: SKY_STRETCH, skyGain: st.skyGain, day: frame.day,
-    dome: v.kind === "dome", ground: st.layers.horizon, bore: frame.boreEnu,
+    dome: onSite, ground: st.layers.horizon, bore: frame.boreEnu,
     beamMode: { off: 0, dish: 1, array: 2 }[st.beamMode], beamGain: 1, band: st.band, array: site.array,
   });
   const centre = unproject(cam, v.w / 2, v.h / 2);
   const res = overlay.draw({
-    cam, dpr, ob: frame.ob, zoom, layers: { ...st.layers, beam: st.beamMode !== "off" }, data,
-    dome: v.kind === "dome", day: frame.day, sun: frame.sun, moon: frame.moon, phase: frame.phase,
+    cam, dpr, ob: frame.ob, zoom, layers: { ...st.layers, beam: st.beamMode !== "off" }, data, skyline,
+    dome: onSite, ground: v.kind === "ground", day: frame.day, sun: frame.sun, moon: frame.moon, phase: frame.phase,
     sunObj: { type: "sun", name: "Sun", v: frame.sun.j2000 }, moonObj: { type: "moon", name: "Moon", v: frame.moon.j2000 },
     decBore: frame.decBore, boreJ2000: frame.boreJ2000, band: st.band, array: site.array,
     sunMonths: sunMonths(st.t), clock: hhmm, selected: st.selected,
@@ -391,9 +430,9 @@ function select(o, focus = false) {
 
 function lookAt(v) {
   const view = st.view;
-  if (view.kind === "dome") {
+  if (view.kind !== "chart") {
     const [az, alt] = A.altaz(A.apply(frame.ob.toEnu, v));
-    view.az0 = az; view.alt0 = clamp(alt, 5, 90);
+    view.az0 = az; view.alt0 = clamp(alt, -90, 90);
   } else {
     const [lon] = A.lonlat(view.frame === "gal" ? A.apply(A.ICRS_TO_GAL, v) : v);
     view.lon0 = lon; view.pan = [0, 0];
@@ -498,7 +537,8 @@ function setPointing(id, dec) {
 function setView(kind) {
   const v = st.view;
   if (kind !== v.kind) {
-    v.kind = kind; v.zoom = 1; v.pan = [0, 0];
+    v.kind = kind; v.zoom = defaultZoom(kind); v.pan = [0, 0];
+    if (AIM[kind]) Object.assign(v, aim(kind));
     if (kind === "chart" && frame) lookAt(frame.boreJ2000);
   }
   for (const b of document.querySelectorAll("[data-view]")) b.setAttribute("aria-pressed", String(b.dataset.view === v.kind));
@@ -584,7 +624,7 @@ function wireControls() {
     if (e.target.matches("input, select, textarea")) return;
     if (e.key === " ") { e.preventDefault(); $("play").click(); }
     else if (e.key === "n" || e.key === "N") $("live").click();
-    else if (e.key === "d" || e.key === "D") setView(st.view.kind === "dome" ? "chart" : "dome");
+    else if (e.key === "d" || e.key === "D") setView({ ground: "dome", dome: "chart", chart: "ground" }[st.view.kind]);
     else if (e.key === "+" || e.key === "=") zoomBy(1.25, st.view.w / 2, st.view.h / 2);
     else if (e.key === "-") zoomBy(0.8, st.view.w / 2, st.view.h / 2);
     else if (e.key === "Escape") select(null);
@@ -599,9 +639,12 @@ function wireControls() {
 
 function panBy(dx, dy) {
   const v = st.view, s = cam.s;
-  if (v.kind === "dome") {
-    v.az0 = A.mod360(v.az0 - (dx / s) / A.DEG);
-    v.alt0 = clamp(v.alt0 + (dy / s) / A.DEG, -5, 90);
+  $("hint").hidden = true;                                  // they have found it
+  if (v.kind !== "chart") {
+    // Turning by the angle dragged at the centre: a turn in azimuth covers
+    // less sky toward the zenith and nadir, so it is scaled up there.
+    v.az0 = A.mod360(v.az0 - (dx / s) / A.DEG / Math.max(Math.cos(v.alt0 * A.DEG), 0.25));
+    v.alt0 = clamp(v.alt0 + (dy / s) / A.DEG, -90, 90);
   } else {
     v.pan = [v.pan[0] - dx / s, v.pan[1] + dy / s];
   }
@@ -610,6 +653,7 @@ function panBy(dx, dy) {
 
 function zoomBy(k, x, y) {
   const v = st.view;
+  $("hint").hidden = true;
   const before = cam && unproject(cam, x, y);
   const pBefore = cam && toPlane(cam, x, y);
   v.zoom = clamp(v.zoom * k, 0.6, 60);
@@ -617,12 +661,12 @@ function zoomBy(k, x, y) {
   if (v.kind === "chart" && pBefore) {
     const pAfter = toPlane(cam, x, y);
     v.pan = [v.pan[0] + pBefore[0] - pAfter[0], v.pan[1] + pBefore[1] - pAfter[1]];
-  } else if (v.kind === "dome" && before) {
+  } else if (v.kind !== "chart" && before) {
     const after = unproject(cam, x, y);
     if (after) {
       const [az1, alt1] = A.altaz(A.apply(frame.ob.toEnu, before)), [az2, alt2] = A.altaz(A.apply(frame.ob.toEnu, after));
-      if (v.alt0 < 85) v.az0 = A.mod360(v.az0 + ((az1 - az2 + 540) % 360) - 180);
-      v.alt0 = clamp(v.alt0 + alt1 - alt2, -5, 90);
+      if (Math.abs(v.alt0) < 85) v.az0 = A.mod360(v.az0 + ((az1 - az2 + 540) % 360) - 180);
+      v.alt0 = clamp(v.alt0 + alt1 - alt2, -90, 90);
     }
   }
   dirty = true;
@@ -684,7 +728,8 @@ function readHash() {
   const p = q.get("p");
   if (p && site.pointings.some((x) => x.id === p)) st.pointing = p;
   else if (p && /^-?\d+(\.\d+)?$/.test(p)) { st.pointing = "custom"; st.customDec = clamp(parseFloat(p), -30, 90); }
-  if (q.get("v") === "chart" || q.get("v") === "dome") st.view.kind = q.get("v");
+  if (["ground", "dome", "chart"].includes(q.get("v"))) st.view.kind = q.get("v");
+  if (AIM[st.view.kind]) Object.assign(st.view, AIM[st.view.kind]);
   if (q.get("proj") === "rect") st.view.proj = CAR;
   if (q.get("fr") === "gal") st.view.frame = "gal";
   const f = (q.get("f") || "").split("-").map(Number);
@@ -693,9 +738,9 @@ function readHash() {
   for (const k of (q.get("on") || "").split(",")) if (k in st.layers) st.layers[k] = true;
   for (const k of (q.get("off") || "").split(",")) if (k in st.layers) st.layers[k] = false;
   const num = (k, lo, hi) => { const x = parseFloat(q.get(k)); return Number.isFinite(x) ? clamp(x, lo, hi) : null; };
-  st.view.zoom = num("zoom", 0.6, 60) ?? 1;
+  st.view.zoom = num("zoom", 0.6, 60);                  // null: the view's default, once the size is known
   st.view.az0 = num("az", 0, 360) ?? st.view.az0;
-  st.view.alt0 = num("alt", -5, 90) ?? st.view.alt0;
+  st.view.alt0 = num("alt", -90, 90) ?? st.view.alt0;
   st.view.lon0 = num("lon", 0, 360);
   readHash.sel = q.get("sel");
 }
@@ -708,8 +753,8 @@ function writeHash() {
   const v = st.view;
   q.set("v", v.kind);
   if (v.kind === "chart") { q.set("fr", v.frame); q.set("proj", v.proj === CAR ? "rect" : "moll"); q.set("lon", fmt(v.lon0, 1)); }
-  else if (v.az0 !== 180 || v.alt0 !== 90) { q.set("az", fmt(v.az0, 1)); q.set("alt", fmt(v.alt0, 1)); }
-  if (Math.abs(v.zoom - 1) > 0.01) q.set("zoom", fmt(v.zoom, 2));
+  else if (v.az0 !== aim(v.kind).az0 || v.alt0 !== aim(v.kind).alt0) { q.set("az", fmt(v.az0, 1)); q.set("alt", fmt(v.alt0, 1)); }
+  if (Math.abs(v.zoom - defaultZoom(v.kind)) > 0.01) q.set("zoom", fmt(v.zoom, 2));
   if (st.selected && !["sun", "moon"].includes(st.selected.type)) q.set("sel", st.selected.name);
   q.set("f", `${st.band[0]}-${st.band[1]}`);
   q.set("beam", st.beamMode);
@@ -724,10 +769,10 @@ function writeHash() {
 // ---------------------------------------------------------------- explain and credits
 
 const STEPS = [
-  ["The sky above the dishes", "This is the sky over the CHORD pathfinder at the Dominion Radio Astrophysical Observatory, near Penticton, BC. The colours show the radio sky at 408 MHz. The bright band is the Milky Way, where most of the radio emission comes from."],
+  ["The sky above the dishes", "You are standing at the CHORD pathfinder at the Dominion Radio Astrophysical Observatory, near Penticton, BC. Drag to look in any direction; scroll to zoom. The hills are the real skyline around the site. The colours show the radio sky at 408 MHz. The bright band is the Milky Way, where most of the radio emission comes from."],
   ["The beam", "The 64 dishes do not move. They all point at one declination on the meridian, the line from north to south through the zenith. The rings show where the beam has half its peak sensitivity, at the two ends of the chosen band. Low frequencies (red) see a wider patch of sky than high frequencies (violet)."],
   ["A drift scan", "The Earth turns, and the sky drifts through the beam once a day. The dashed lines show the strip of sky that passes through the beam. The dots along it show where the beam will point in the hours ahead, in local time."],
-  ["Radio sees in daylight", "In the dome view the stars fade during the day, but the radio sky does not: radio waves pass through the daylit atmosphere. The Sun is still a very bright radio source, so the panel tells you when it crosses the strip."],
+  ["Radio sees in daylight", "In the ground and dome views the stars fade during the day, but the radio sky does not: radio waves pass through the daylit atmosphere. The Sun is still a very bright radio source, so the panel tells you when it crosses the strip."],
   ["Frequency is distance", "Hydrogen gas emits at 1420 MHz. The expansion of the universe stretches that line to lower frequencies, so each frequency in the band sees hydrogen at one distance and one time in the past. The band panel shows the redshift and the lookback time."],
   ["The array beam", "Set the beam to Array to see the 8 × 8 grid of dishes added together. The narrow peaks repeat across the sky (grating lobes) because the dishes are evenly spaced. Over a wide band each lobe spreads into a small rainbow, because each frequency puts it at a different place."],
   ["Explore", "Select any object for its details, or search for it by name. Pulsars flash at their own period; the fastest show as a steady glow. Use the time controls to watch a day go by, or select a baseband dump to see where the dishes pointed when it was taken."],
@@ -752,6 +797,7 @@ function credits() {
     `Radio sources: ${cat.credits["3crr"]}.`,
     `Pulsars: ${cat.credits.pulsars}.`,
     `Stars and constellations: ${cat.credits.stars}. Licence below.`,
+    ...(horizon.flat ? [] : [`Skyline: computed from ${horizon.source} (https://registry.opendata.aws/terrain-tiles/).`]),
     "Positions of the Sun and the Moon: J. Meeus, Astronomical Algorithms, 2nd ed. (1998); precession IAU 1976. Checked against astropy.",
     "Cosmology: flat ΛCDM with H₀ = 67.66 km/s/Mpc and Ωm = 0.3111 (Planck 2018).",
     "The beam is a model: a Gaussian main lobe for each dish, times the array factor of an ideal 8 × 8 grid. The real beam has sidelobes and errors not shown here.",
@@ -772,7 +818,7 @@ async function main() {
   st.band = site.default_band_mhz.slice();
   readHash();
   resize();
-  try { gl = new SkyGL($("sky"), img); } catch (err) { fail(`This page needs WebGL. ${err.message}`); return; }
+  try { gl = new SkyGL($("sky"), img, { alt: horizon.alt_deg }); } catch (err) { fail(`This page needs WebGL. ${err.message}`); return; }
   overlay = new Overlay($("ov"));
   trace = new Trace($("trace"), img, skyMeta);
   wireControls();
@@ -782,6 +828,7 @@ async function main() {
   setBeam(st.beamMode);
   frame = computeFrame();
   setView(st.view.kind);
+  if (st.view.kind !== "chart" && st.view.alt0 == null) st.view.alt0 = aim(st.view.kind).alt0;
   if (st.view.lon0 == null) { st.view.lon0 = 0; if (st.view.kind === "chart") lookAt(frame.boreJ2000); }
   syncTimeControls();
   window.addEventListener("resize", resize);

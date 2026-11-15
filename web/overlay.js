@@ -96,9 +96,13 @@ export class Overlay {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, cam.w, cam.h);
     this.S = S;
-    // In the dome, the ground hides what is below the horizon.
+    // In the ground and dome views, the terrain hides what is below the skyline.
     const T = S.ob.toEnu;
-    this.hidden = S.dome ? (v) => T[6] * v[0] + T[7] * v[1] + T[8] * v[2] < -0.005 : () => false;
+    this.hidden = S.dome ? (v) => {
+      const e = apply(T, v);
+      if (e[2] > 0.25) return false;                        // above every hill: skip the lookup
+      return Math.asin(Math.max(-1, e[2])) / DEG < S.skyline(Math.atan2(e[0], e[1]) / DEG) - 0.05;
+    } : () => false;
     this.hits = [];
     this.blink = [];
     this.labels = new Labels(cam.w, cam.h);
@@ -144,8 +148,8 @@ export class Overlay {
   }
 
   // Calls fn(x, y) at each on-screen copy of a J2000 point.
-  at(v, fn, margin = 20) {
-    if (this.hidden(v)) return;
+  at(v, fn, margin = 20, always = false) {
+    if (!always && this.hidden(v)) return;
     const cam = this.S.cam, p = project(cam, v);
     if (!p) return;
     for (const dx of copies(cam)) {
@@ -179,12 +183,33 @@ export class Overlay {
     for (const az of range(0, 330, 30)) this.line(range(0, 88, 2).map((alt) => en(az, alt)), COLORS.altazGrid);
   }
 
+  // The terrain skyline, with compass points (and, in the ground view,
+  // azimuth ticks) just below it.
   horizon() {
-    const F = this.S.ob.fromEnu, en = (az, alt) => apply(F, enuFromAltaz(az, alt));
-    this.line(range(0, 360, 1).map((az) => en(az, 0)), COLORS.horizon, 1.4);
-    const alt = this.S.dome ? 2.5 : 2;
-    for (const [az, t] of [[0, "N"], [90, "E"], [180, "S"], [270, "W"]])
-      this.at(en(az, alt), (x, y) => this.labels.add(t, x, y, { prio: 90, color: COLORS.horizon, font: "600 14px var(--font)", center: true }));
+    const S = this.S, F = S.ob.fromEnu, en = (az, alt) => apply(F, enuFromAltaz(az, alt));
+    const sky = range(0, 360, 0.5).map((az) => en(az, S.skyline(az)));
+    if (S.dome) this.line(sky, "rgba(150,220,175,0.12)", 5);
+    this.line(sky, COLORS.horizon, 1.3);
+    const below = S.dome ? -3.2 : 2;
+    const points = [[0, "N"], [45, "NE"], [90, "E"], [135, "SE"], [180, "S"], [225, "SW"], [270, "W"], [315, "NW"]];
+    for (const [az, t] of points) {
+      const major = t.length === 1;
+      this.at(en(az, S.skyline(az) + below), (x, y) => this.labels.add(t, x, y, {
+        prio: major ? 90 : 40, center: true,
+        color: major ? COLORS.horizon : "rgba(150,220,175,0.6)", font: major ? "600 14px var(--font)" : "600 11px var(--font)",
+      }), 20, true);
+    }
+    if (S.ground) {
+      const c = this.ctx;
+      c.strokeStyle = "rgba(150,220,175,0.45)"; c.lineWidth = 1;
+      for (const az of range(0, 355, 5)) {
+        const hz = S.skyline(az), a = project(S.cam, en(az, hz)), b = project(S.cam, en(az, hz - (az % 15 ? 0.6 : 1.2)));
+        if (!a || !b) continue;
+        c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+        if (az % 45 && az % 15 === 0 && S.layers.labels)
+          this.at(en(az, hz - 2.4), (x, y) => this.labels.add(`${az}°`, x, y, { prio: 30, center: true, color: "rgba(150,220,175,0.55)", font: "10px var(--font)" }), 20, true);
+      }
+    }
     this.at(en(0, 90), (x, y) => {
       const c = this.ctx;
       c.strokeStyle = "rgba(150,220,175,0.5)"; c.lineWidth = 1;

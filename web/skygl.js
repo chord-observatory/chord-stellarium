@@ -13,6 +13,8 @@
 import { STEREO, MOLL, CAR } from "./proj.js";
 
 export const BAND_SAMPLES = 24;
+// Skyline texture encoding: altitude HZ_MIN .. HZ_MIN + HZ_SPAN deg in 16 bits.
+const HZ_MIN = "-10.0", HZ_SPAN = "40.0";
 
 const VERT = `
 attribute vec2 aPos;
@@ -34,9 +36,11 @@ uniform mat3 uCam;          // camera -> J2000
 uniform mat3 uToEnu;        // J2000 -> ENU
 uniform vec2 uStretch;      // texture value shown as black and as white
 uniform float uSkyGain;
-uniform float uDay;         // 0 night .. 1 full day (dome only)
-uniform float uDome;
-uniform float uGround;      // shade below the horizon
+uniform float uDay;         // 0 night .. 1 full day (ground and dome views)
+uniform float uDome;        // 1 in the ground and dome views: the ground is opaque
+uniform float uGround;      // charts: dim the sky below the skyline
+uniform sampler2D uHz;      // skyline: per azimuth step, altitude in 16 bits (R, G)
+uniform float uHzN;
 uniform vec3 uBore;         // beam centre, ENU
 uniform int uBeamMode;      // 0 off, 1 primary, 2 array
 uniform float uBeamGain;
@@ -87,6 +91,19 @@ bool cameraOf(vec2 p, out vec3 c) {
   }
   c = vec3(cos(phi) * cos(lam), cos(phi) * sin(lam), sin(phi));
   return true;
+}
+
+// The terrain skyline's altitude (deg) at azimuth azDeg, linear between
+// samples.  The texture is NEAREST; the interpolation is here so the
+// 16-bit altitude is decoded before it is mixed.
+float skyline(float azDeg) {
+  float x = mod(azDeg, 360.0) / 360.0 * uHzN;
+  float i0 = floor(x), f = x - i0, i1 = mod(i0 + 1.0, uHzN);
+  vec4 a = texture2D(uHz, vec2((i0 + 0.5) / uHzN, 0.5));
+  vec4 b = texture2D(uHz, vec2((i1 + 0.5) / uHzN, 0.5));
+  float ha = (a.r * 65280.0 + a.g * 255.0) / 65535.0 * ${HZ_SPAN} + ${HZ_MIN};
+  float hb = (b.r * 65280.0 + b.g * 255.0) / 65535.0 * ${HZ_SPAN} + ${HZ_MIN};
+  return mix(ha, hb, f);
 }
 
 float arrayFactor(float psi, float n) {
@@ -146,14 +163,27 @@ void main() {
   float t = clamp((raw - uStretch.x) / (uStretch.y - uStretch.x), 0.0, 1.0);
   vec3 col = vec3(0.012, 0.016, 0.035) + inferno(pow(t, 1.15)) * uSkyGain;
 
-  if (uDome > 0.5 && e.z > 0.0) {
+  float alt = asin(clamp(e.z, -1.0, 1.0)) / DEG;
+  float hz = skyline(atan(e.x, e.y) / DEG);
+  bool below = alt < hz;
+  if (uDome > 0.5 && !below) {
     float air = 1.0 - e.z;                                    // brighter toward the horizon
     col += uDay * mix(vec3(0.05, 0.11, 0.24), vec3(0.16, 0.24, 0.36), air * air);
   }
   if (uBeamMode > 0) col += beam(e) * uBeamGain;
-  if (e.z < 0.0) {
-    if (uDome > 0.5) col = mix(col, vec3(0.020, 0.028, 0.026) + 0.05 * uDay, 0.9);
-    else if (uGround > 0.5) col *= 0.5;
+  if (below) {
+    if (uDome > 0.5) {
+      // The ground: darker downward, with a band of haze along the skyline
+      // (the same in every direction: below the skyline the distance to
+      // the terrain is not known), stronger by day.
+      float depth = clamp((hz - alt) / 35.0, 0.0, 1.0);
+      vec3 near = mix(vec3(0.034, 0.042, 0.040), vec3(0.20, 0.23, 0.20), uDay);
+      vec3 deep = mix(vec3(0.016, 0.020, 0.020), vec3(0.09, 0.11, 0.09), uDay);
+      vec3 g = mix(near, deep, sqrt(depth));
+      float haze = exp(-(hz - alt) / 1.2);
+      g = mix(g, mix(vec3(0.06, 0.08, 0.11), vec3(0.42, 0.50, 0.58), uDay), 0.35 * haze);
+      col = g;
+    } else if (uGround > 0.5) col *= 0.5;
   }
   gl_FragColor = vec4(col, 1.0);
 }
@@ -171,7 +201,8 @@ function compile(gl, type, src) {
 const glMat = (m) => new Float32Array([m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]]);
 
 export class SkyGL {
-  constructor(canvas, image) {
+  /** horizon: { alt: skyline altitude (deg) per azimuth step, from north through east } */
+  constructor(canvas, image, horizon) {
     const gl = canvas.getContext("webgl", { antialias: false, premultipliedAlpha: false, preserveDrawingBuffer: true });
     if (!gl) throw new Error("WebGL is not available");
     this.gl = gl;
@@ -198,6 +229,19 @@ export class SkyGL {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    const hn = horizon.alt.length, px = new Uint8Array(4 * hn);
+    for (let i = 0; i < hn; i++) {
+      const v = Math.round(Math.max(0, Math.min(1, (horizon.alt[i] - Number(HZ_MIN)) / Number(HZ_SPAN))) * 65535);
+      px.set([v >> 8, v & 255, 0, 255], 4 * i);
+    }
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, hn, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.NEAREST], [gl.TEXTURE_MAG_FILTER, gl.NEAREST],
+      [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+    gl.activeTexture(gl.TEXTURE0);
+    this.hzN = hn;
 
     this.u = {};
     const n = gl.getProgramParameter(prog, gl.ACTIVE_UNIFORMS);
@@ -232,6 +276,8 @@ export class SkyGL {
     gl.uniform2f(u.uSpacing, p.array.dx_m, p.array.dy_m);
     gl.uniform2f(u.uCount, p.array.nx, p.array.ny);
     gl.uniform1i(u.uSky, 0);
+    gl.uniform1i(u.uHz, 1);
+    gl.uniform1f(u.uHzN, this.hzN);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 }

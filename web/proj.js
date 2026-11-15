@@ -4,7 +4,8 @@
 // labels.
 //
 // Camera coordinates c are a rotation (and, for charts, a mirror) of
-// J2000.  Dome: c = (right, up, forward) about the view direction, drawn
+// J2000.  Ground and dome (the same camera, aimed at the horizon or the
+// zenith): c = (right, up, forward) about the view direction, drawn
 // stereographically.  Chart: c is the equatorial or Galactic frame turned
 // to the centre longitude and mirrored so longitude grows to the left
 // (the sky seen from inside), drawn as Mollweide or plate carree.
@@ -25,13 +26,13 @@ export function fitScale(proj, w, h) {
 }
 
 /**
- * view: { kind: "dome" | "chart", proj (charts), frame: "eq" | "gal",
- *         az0, alt0 (dome, degrees), lon0 (chart, degrees),
+ * view: { kind: "ground" | "dome" | "chart", proj (charts), frame: "eq" | "gal",
+ *         az0, alt0 (ground and dome, degrees), lon0 (chart, degrees),
  *         zoom, pan: [x, y] (projection units), w, h, insetL, insetB (CSS px) }
  */
 export function makeCamera(view, ob) {
   let M, proj;
-  if (view.kind === "dome") {
+  if (view.kind !== "chart") {                            // ground and dome: a camera at the site
     proj = STEREO;
     const a = view.az0 * DEG, h = view.alt0 * DEG;
     const fwd = [Math.cos(h) * Math.sin(a), Math.cos(h) * Math.cos(a), Math.sin(h)];
