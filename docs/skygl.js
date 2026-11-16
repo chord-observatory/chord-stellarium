@@ -2,10 +2,10 @@
 // the projection (proj.js), looks up the 408 MHz sky (sky.png), adds the
 // daylight and twilight (atmos.js) and the beam, and shades the ground.
 // The radio sky shows through the daylight and the clouds, as radio waves
-// pass through both.  The Clouds and Landscape layers are made up: clouds
-// from fractal noise, drifting on a steady wind; hills under the real
-// skyline; a plain of grass that the wind sweeps; a lake that mirrors the
-// sky, radio sky included.
+// pass through both.  The Landscape layer's clouds and terrain are made up:
+// clouds from fractal noise, drifting on a steady wind; hills under the
+// real skyline; a plain of bunchgrass that the wind sweeps, with firs,
+// brush and boulders; a lake that mirrors the sky, radio sky included.
 //
 // The beam is drawn over the band: BAND_SAMPLES frequencies between the
 // two slider handles, evenly spaced in 1/f, each tinted by its place in
@@ -22,14 +22,15 @@ export const BAND_SAMPLES = 24;
 // Skyline texture encoding: altitude HZ_MIN .. HZ_MIN + HZ_SPAN deg in 16 bits.
 const HZ_MIN = "-10.0", HZ_SPAN = "40.0";
 
-// The made-up terrain's height maps: half-width (m) and height range (m).
-export const MAPS = [{ half: 128, range: [-8, 24], octaves: 8 }, { half: 512, range: [-8, 56], octaves: 6 },
-  { half: 2048, range: [-8, 136], octaves: 4 }];
-const MAP_N = 512;
+// The made-up terrain's height maps: half-widths (m) around the observer,
+// each MAP_N texels across, with heights MAP_H[0] .. MAP_H[1] (m) in 16 bits.
+const MAPS = [40, 200, 800, 2600];
+const MAP_N = 1024, MAP_H = [-10, 250];
 const WATER_LEVEL = -0.8;          // the lake's surface (m)
+const glf = (x) => Number(x).toFixed(4);
 
 // Shared by the sky shader and the map builder.
-const TERRAIN = `
+const NOISE = `
 // Value noise from the random texture, smooth across texels.
 float noise(vec2 p) {
   vec2 i = floor(p), f = fract(p);
@@ -37,17 +38,17 @@ float noise(vec2 p) {
   return texture2D(uNoise, (i + f + 0.5) / 256.0).r;
 }
 
-// Fractal noise of n octaves, about 0..1.
-float tfbm(vec2 p, int n) {
-  float a = 0.5, s = 0.0, w = 0.0;
-  for (int k = 0; k < 9; k++) {
-    if (k >= n) break;
-    s += a * noise(p);
-    w += a;
+// Fractal noise, about 0..1.  lod: one pixel in units of p; octaves finer
+// than about two pixels fade to their mean, so far detail does not shimmer.
+float fbm(vec2 p, float lod) {
+  float a = 0.5, s = 0.0;
+  for (int k = 0; k < 6; k++) {
+    s += a * mix(0.5, noise(p), clamp(1.5 - 2.0 * lod, 0.0, 1.0));
     p = mat2(1.6, 1.2, -1.2, 1.6) * p + 17.0;
+    lod *= 2.0;
     a *= 0.5;
   }
-  return s / w;
+  return s / 0.984;
 }
 
 float segDist(vec2 p, vec2 a, vec2 b) {
@@ -63,7 +64,7 @@ vec3 cells(vec2 p, out vec2 off) {
   off = vec2(0.0);
   for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++) {
     vec2 g = c + vec2(float(i), float(j));
-    vec2 r = texture2D(uNoise, (mod(g, 256.0) + 0.5) / 256.0).gb;
+    vec2 r = texture2D(uNoise, (g + 0.5) / 256.0).gb;
     vec2 d = p - g - r;
     if (length(d) < best.x) { best = vec3(length(d), r); off = d; }
   }
@@ -75,48 +76,142 @@ float under(float a, float b, float x) { return 1.0 - smoothstep(a, b, x); }
 
 // The larger of a and b, rounded over k.
 float smax(float a, float b, float k) { float t = clamp(0.5 + 0.5 * (a - b) / k, 0.0, 1.0); return mix(b, a, t) + k * t * (1.0 - t); }
+`;
 
-// The made-up terrain at P (m east and north of the observer), to n octaves:
-// (height above the array's ground (m), rock 0..1, moisture 0..1, brush:
-// 1 on a shrub, or with n < 7, the share of ground the shrubs cover).
-// Broad swells, knolls with rocky crests and boulders, ground rising toward
-// the real hills; levelled for the array's pad and the sight lines to the
-// array and the lake; a hollow that holds the lake, with a ragged shore;
-// sagebrush in patches; and the knoll the observer stands on, falling away
-// in every direction.
-vec4 terrainAt(vec2 P, int n) {
-  float r = length(P);
-  float swell = (tfbm(P * 0.005 + 3.1, n) - 0.5) * 30.0;
-  float ridged = 1.0 - abs(2.0 * tfbm(P * 0.017 + 9.7, n) - 1.0);
-  float crest = smoothstep(0.62, 0.9, ridged);
-  float boulders = crest * pow(max(tfbm(P * 0.12 + 1.3, n) - 0.45, 0.0) * 2.4, 1.6) * 4.0;
-  float h = swell + pow(ridged, 4.0) * 13.0 + boulders + smoothstep(350.0, 2000.0, r) * 80.0;
+// The map builder's terrain.
+const TERRAIN = `
+float rnd(vec2 g) { return texture2D(uNoise, (g + 0.5) / 256.0).r; }
+
+// Value noise with its gradient.
+vec3 noised(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f), du = 6.0 * f * (1.0 - f);
+  float a = rnd(i), b = rnd(i + vec2(1.0, 0.0)), c = rnd(i + vec2(0.0, 1.0)), d = rnd(i + vec2(1.0, 1.0));
+  return vec3(a + (b - a) * u.x + (c - a) * u.y + (a - b - c + d) * u.x * u.y,
+              du * (vec2(b - a, c - a) + (a - b - c + d) * u.yx));
+}
+
+// Fractal noise whose detail thins out where the slope is steep, as on
+// eroded hills (after I. Quilez); about 0..1.
+float eroded(vec2 p, float lod) {
+  float a = 0.5, s = 0.0;
+  vec2 d = vec2(0.0);
+  for (int k = 0; k < 9; k++) {
+    if (lod > 0.5) break;
+    vec3 n = noised(p);
+    d += n.yz;
+    s += a * n.x / (1.0 + dot(d, d));
+    p = mat2(1.6, 1.2, -1.2, 1.6) * p + 17.0;
+    lod *= 2.0;
+    a *= 0.5;
+  }
+  return s;
+}
+
+// The made-up terrain at P (m east and north of the observer), for a map of
+// uTexel metres per texel: (height above the array's ground (m); tall: 1 in
+// a tree, falling over 6 m from it, and above 0 wherever trees may stand; cover: 0 rock, 0.5 grass, 0.75
+// brush, 1 tree).  A plain of low swells; eroded hills with crags, boulders
+// and stands of fir; ground rising toward the real hills; all levelled for
+// the array's pad and the sight lines to the array and the lake; a hollow
+// that holds the lake, with bays, an island and reeds along the shore;
+// sagebrush in patches; and the knoll the observer stands on.
+vec3 terrainAt(vec2 P) {
+  float r = length(P), px = uTexel;
+  float swell = (fbm(P * 0.004 + 3.1, px * 0.004) - 0.5) * 18.0;
+  float hills = smoothstep(0.40, 0.64, fbm(P * 0.0017 + 7.3, px * 0.0017)) * smoothstep(70.0, 300.0, r);
+  float crag = hills * smoothstep(0.48, 0.66, fbm(P * 0.011 + 21.0, px * 0.011));
+  float ridged = 1.0 - abs(2.0 * fbm(P * 0.03 + 9.7, px * 0.03) - 1.0);
+  float outcrop = crag * smoothstep(0.78, 0.97, ridged);     // ledges along lines
+  float h = swell + hills * eroded(P * 0.0055 + 11.0, px * 0.0055) * 70.0
+          + outcrop * (2.0 + 4.0 * fbm(P * 0.3 + 2.0, px * 0.3))
+          + smoothstep(350.0, 2000.0, r) * 80.0;
+
   vec2 q = abs(P - uArrayBox.xy) - uArrayBox.zw;
   float pad = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
   float level = max(under(4.0, 30.0, pad), under(26.0, 48.0, segDist(P, vec2(0.0), uArrayBox.xy)));
   level = max(level, under(16.0, 34.0, segDist(P, vec2(0.0), uLake.xy)));
   h = smax(h, -0.2, 3.0);                                   // dry hollows silt up into flats
   h = mix(h, min(h, 0.0) * 0.3, level);
+  h += (fbm(P * 0.21 + 14.0, px * 0.21) - 0.5) * 0.5;       // hummocks
   h = mix(h, 0.0, under(0.0, 8.0, pad));                    // the pad is level with the dishes' feet
-  float ld = length((P - uLake.xy) / uLake.zw) + (tfbm(P * 0.045 + 5.0, n) - 0.5) * 1.1;
-  float bed = -3.2 + (tfbm(P * 0.03 + 2.0, n) - 0.5) * 4.0;
+
+  // The lake: two lobes with a wandering shore, and an island.
+  vec2 L = P - uLake.xy + (vec2(fbm(P * 0.021 + 5.0, px * 0.021), fbm(P * 0.021 + 9.0, px * 0.021)) - 0.5) * 26.0;
+  float ld = min(length(L / uLake.zw), length((L - vec2(30.0, -12.0)) / (uLake.zw * 0.6)) + 0.12);
+  ld += (fbm(P * 0.13 + 5.0, px * 0.13) - 0.5) * 0.4;
+  float bed = -3.2 + (fbm(P * 0.03 + 2.0, px * 0.03) - 0.5) * 4.0;
   h = mix(h, min(h, bed), under(0.55, 1.3, ld));
-  float m = max(1.0 - r / 55.0, 0.0);
+  vec2 isle = L - vec2(-7.0, 6.0);
+  h += 4.4 * exp(-dot(isle, isle) / 26.0);
+
+  float m = max(1.0 - r * r / 2500.0, 0.0);                 // the observer's knoll, 50 m across
   if (m > 0.0) h = max(h, (uEyeH - 1.7) * m * m);
-  float rock = clamp(crest * 1.2 + boulders * 0.4, 0.0, 1.0) * (1.0 - level);
-  float moist = clamp(under(1.0, 1.7, ld) + under(-9.0, -2.0, swell) * 0.6, 0.0, 1.0);
-  float brush = smoothstep(0.5, 0.78, noise(P * 0.012 + 30.0) + moist * 0.25) * (1.0 - rock)
-              * smoothstep(0.0, 4.0, pad) * smoothstep(0.3, 0.8, h - (${WATER_LEVEL.toFixed(1)}));
-  if (n >= 7 && brush > 0.0) {
-    vec2 off;
+
+  float above = h - (${WATER_LEVEL.toFixed(1)});
+  float dry = smoothstep(0.3, 0.9, above) * smoothstep(0.0, 4.0, pad);
+  float stone = clamp(outcrop * 2.5, 0.0, 1.0) * (1.0 - level);
+  float woody = 0.0, tall = 0.0;
+  vec2 off;
+
+  // Boulders, brush and trees stand at random sites.  Whether a site holds
+  // one is decided at the site, so each stands whole.
+  if (px < 0.5) {
+    // Boulders, in fields.
+    vec3 b = cells(P * 0.25, off);
+    vec2 S = P - off * 4.0;
+    float stony = max(under(0.3, 0.45, noise(S * 0.013 + 50.0)) * 0.4, smoothstep(0.55, 0.7, noise(S * 0.02 + 21.0)) * 0.7);
+    float rad = (0.1 + 0.3 * b.z * b.z) * step(b.y, stony * 0.6) * step(14.0, length(S));
+    float d = rad > 0.0 ? b.x / rad : 2.0;
+    h += sqrt(max(1.0 - d * d, 0.0)) * rad * 3.2 * (0.8 + 0.4 * noise(P * 1.7)) * dry;
+    stone = max(stone, under(1.0, 1.3, d) * dry);
+
+    // Sagebrush, in patches.
     vec3 c = cells(P * 0.35, off);
-    float rad = (0.3 + 0.25 * c.z) * step(c.y, 0.7 * brush);
-    float d = rad > 0.0 ? c.x / rad : 2.0;
-    float dome = sqrt(max(1.0 - d * d, 0.0));
-    h += dome * (0.55 + 0.6 * c.z) * (0.85 + 0.3 * noise(P * 3.0));
-    brush = step(d, 1.0);
-  } else brush *= 0.35;
-  return vec4(h, rock, moist, brush);
+    S = P - off / 0.35;
+    rad = (0.3 + 0.25 * c.z) * step(c.y, 0.7 * smoothstep(0.45, 0.7, noise(S * 0.012 + 30.0)));
+    d = rad > 0.0 ? c.x / rad : 2.0;
+    float bush = dry * (1.0 - stone);
+    h += sqrt(max(1.0 - d * d, 0.0)) * (0.55 + 0.6 * c.z) * (0.75 + 0.5 * noise(P * 3.0)) * bush;
+    woody = 0.5 * under(1.0, 1.35, d) * step(0.5, bush);
+
+    // Reeds and rushes along parts of the shore.
+    float reed = under(0.1, 0.5, abs(above - 0.1)) * smoothstep(0.42, 0.55, noise(P * 0.07 + 3.0));
+    h += reed * (0.5 + 1.2 * noise(P * 4.0) * noise(P * 11.0 + 5.0));
+    woody = max(woody, 0.5 * step(0.3, reed));
+  }
+
+  // Firs, in stands.
+  float wn = fbm(P * 0.006 + 70.0, px * 0.006);
+  if (px < 2.0) {
+    vec2 g0 = floor(P / 7.0);
+    float crown = 0.0, edge = 9.0;
+    for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++) {
+      vec2 g = g0 + vec2(float(i), float(j));
+      vec4 t = texture2D(uNoise, (g + 0.5) / 256.0);
+      vec2 S = (g + t.gb) * 7.0;
+      vec2 sq = abs(S - uArrayBox.xy) - uArrayBox.zw;
+      float open = step(55.0, length(S)) * step(34.0, max(sq.x, sq.y)) * step(52.0, segDist(S, vec2(0.0), uArrayBox.xy))
+                 * step(38.0, segDist(S, vec2(0.0), uLake.xy)) * step(2.6, length((S - uLake.xy - vec2(12.0, -5.0)) / uLake.zw));
+      if (t.r < smoothstep(0.47, 0.64, fbm(S * 0.006 + 70.0, px * 0.006)) * 0.6 * open) {
+        float ht = 5.0 + 11.0 * t.a * t.a, rad = ht * (0.16 + 0.12 * fract(t.a * 7.0));
+        if (px > 0.5) rad = max(rad * 1.25, 2.4);              // far off, stout enough for the map
+        vec2 o = P - S;
+        float d = length(o) / (0.8 + 0.4 * noise(o * 1.1 + t.gb * 40.0));       // lopsided
+        crown = max(crown, ht * pow(max(1.0 - d / rad, 0.0), 0.5 + 0.4 * fract(t.a * 13.0)));
+        edge = min(edge, d - rad);
+      }
+    }
+    h += crown * (0.8 + 0.4 * noise(P * 2.3));
+    if (px < 0.5) h += 0.5 * sin(crown * 5.0) * smoothstep(0.5, 2.0, crown);   // boughs in tiers
+    woody = max(woody, under(px, 2.0 * px + 0.3, edge));
+    tall = max(clamp(1.0 - edge / 6.0, 0.0, 1.0), 0.03 * step(0.37, wn) * step(35.0, r));
+  } else {
+    float woods = smoothstep(0.47, 0.64, wn) * 0.6 * (1.0 - level) * dry;
+    h += woods * 9.0 * (0.5 + noise(P * 0.11));
+    woody = woods;
+  }
+  return vec3(h, tall, woody > 0.0 ? 0.5 + 0.5 * woody : 0.5 - 0.5 * stone);
 }
 `;
 
@@ -127,13 +222,14 @@ uniform vec4 uLake;
 uniform vec4 uArrayBox;
 uniform float uEyeH;
 uniform float uHalf;
-uniform vec2 uRange;
-uniform int uOctaves;
+uniform float uTexel;       // metres per texel of the map being built
+${NOISE}
 ${TERRAIN}
 void main() {
   vec2 P = (gl_FragCoord.xy / ${MAP_N}.0 - 0.5) * 2.0 * uHalf;
-  vec4 t = terrainAt(P, uOctaves);
-  gl_FragColor = vec4(clamp((t.x - uRange.x) / (uRange.y - uRange.x), 0.0, 1.0), t.y, t.z, t.w);
+  vec3 t = terrainAt(P);
+  float v = clamp((t.x - (${glf(MAP_H[0])})) / ${glf(MAP_H[1] - MAP_H[0])}, 0.0, 1.0) * 255.0;
+  gl_FragColor = vec4(floor(v) / 255.0, fract(v), t.y, t.z);   // the two height bytes add up under the texture filter
 }
 `;
 
@@ -191,6 +287,7 @@ uniform float uSunOverHills; // 1 when the Sun is above the real skyline, 0 behi
 uniform sampler2D uMap0;    // the made-up terrain's height maps (MAPS)
 uniform sampler2D uMap1;
 uniform sampler2D uMap2;
+uniform sampler2D uMap3;
 
 const float PI = 3.14159265359;
 const float SQRT2 = 1.41421356237;
@@ -291,7 +388,7 @@ vec3 beam(vec3 e) {
   return uBeamMode == 2 ? hue * pow(env, 0.45) * 1.2 : hue * env * 0.32;
 }
 
-${TERRAIN}
+${NOISE}
 // ---- the optical sky, the clouds and the landscape (ground and dome views)
 
 vec3 curve(vec3 x) { return uStrength * pow(1.0 - exp(-max(x, 0.0)), vec3(1.0 / 2.2)); }
@@ -323,19 +420,6 @@ vec3 skyAt(vec3 e) {
 vec3 washed(vec3 radio, vec3 sky) {
   float w = clamp(dot(sky, vec3(0.2126, 0.7152, 0.0722)) / 0.28, 0.0, 1.0);
   return max(radio - w * inferno(0.4) * uSkyGain, 0.0);
-}
-
-// Fractal noise, about 0..1.  lod: one pixel in units of p; octaves finer
-// than about two pixels fade to their mean, so far detail does not shimmer.
-float fbm(vec2 p, float lod) {
-  float a = 0.5, s = 0.0;
-  for (int k = 0; k < 6; k++) {
-    s += a * mix(0.5, noise(p), clamp(1.5 - 2.0 * lod, 0.0, 1.0));
-    p = mat2(1.6, 1.2, -1.2, 1.6) * p + 17.0;
-    lod *= 2.0;
-    a *= 0.5;
-  }
-  return s / 0.984;
 }
 
 // Henyey-Greenstein phase, 1 for isotropic scattering.
@@ -402,96 +486,141 @@ vec3 litS(vec3 alb, vec3 n, float sun, float ao) {
 // The air in front of the terrain toward horizontal direction hd.
 vec3 hazeAt(vec2 hd) { return skyAt(normalize(vec3(hd, 0.03))); }
 
-// The real skyline's hills, made up in detail: ridges and gullies, grass
-// low down, pine on the upper slopes, hazy with distance.
+// The real skyline's hills, made up in detail: two nearer ridges in front
+// of the skyline, each with gullies, grass low down and fir above, hazier
+// with distance.
 vec3 hillsAt(vec3 e, float alt, float hz, float pix) {
   vec2 hd = length(e.xy) > 1e-5 ? normalize(e.xy) : vec2(0.0, 1.0);
-  float az = atan(e.x, e.y), up = clamp(alt / max(hz, 0.5), 0.0, 1.0);
-  float gully = fbm(vec2(az * 30.0, alt * DEG * 8.0), pix * 30.0);           // ridges and gullies run downhill
-  float patch = fbm(vec2(az * 70.0, alt * DEG * 160.0), pix * 160.0);
-  float pine = smoothstep(0.52, 0.66, patch + up * 0.25 + (gully - 0.5) * 0.6);
-  vec3 alb = mix(vec3(0.24, 0.20, 0.13), vec3(0.08, 0.11, 0.07), pine);
-  alb *= 0.85 + 0.3 * patch;
-  vec3 n = normalize(vec3(-hd * 0.6 + vec2(-hd.y, hd.x) * (gully - 0.5) * 1.4, 0.8));
+  float r1 = hz * (0.30 + 0.30 * fbm(hd * 7.0 + 3.0, pix * 7.0));
+  float r2 = hz * (0.58 + 0.30 * fbm(hd * 4.5 + 11.0, pix * 4.5));
+  float layer = alt < r1 ? 0.0 : alt < r2 ? 1.0 : 2.0;
+  float top = layer < 0.5 ? r1 : layer < 1.5 ? r2 : hz;
+  float up = clamp(alt / max(top, 0.5), 0.0, 1.0);
+  vec2 q = hd * (26.0 + 6.0 * layer) + layer * 19.0;
+  float y = alt * DEG;
+  q += (vec2(fbm(q * 0.6 + 3.0, pix * 18.0), fbm(q * 0.6 + 8.0, pix * 18.0)) - 0.5) * 2.0;
+  float gully = fbm(q + y * vec2(3.0, 5.0), pix * 30.0);                     // ridges and gullies run downhill
+  float patch = fbm(q * 2.6 + y * vec2(40.0, 60.0), pix * 80.0);
+  float pine = smoothstep(0.50, 0.64, patch + up * 0.22 + (gully - 0.5) * 0.7 + layer * 0.03);
+  vec3 alb = mix(vec3(0.27, 0.22, 0.13), vec3(0.07, 0.10, 0.06), pine);
+  alb *= 0.8 + 0.4 * patch;
+  vec3 n = normalize(vec3(-hd * 0.6 + vec2(-hd.y, hd.x) * (gully - 0.5) * 1.8, 0.8));
   vec3 c = litS(alb, n, uSunOverHills, 1.0);
-  return mix(c, hazeAt(hd), 0.42 + 0.18 * up);
+  float haze = 0.30 + 0.15 * layer + 0.10 * smoothstep(0.6, 1.0, up);       // each ridge fades toward its crest
+  return mix(c, hazeAt(hd), haze);
 }
 
 // ---- the made-up terrain, ray-marched through its height maps
 
 const float WATER = ${WATER_LEVEL.toFixed(1)};
+const float GRASS = 0.45;                // the tallest bunchgrass (m)
 
-// Terrain from the maps (built once from terrainAt; skygl.js): near, middle
-// and far, each 512 x 512 around the observer.
-vec4 mapTexel(vec2 P, out vec2 range) {
+// The terrain's maps (built once from terrainAt; skygl.js), each 1024 x 1024
+// around the observer: (height high byte, low byte, tall, cover).
+vec4 mapTexel(vec2 P) {
   float a = max(abs(P.x), abs(P.y));
-  if (a < ${MAPS[0].half * 0.98}) { range = vec2(${MAPS[0].range[0]}.0, ${MAPS[0].range[1] - MAPS[0].range[0]}.0); return texture2D(uMap0, P / ${2 * MAPS[0].half}.0 + 0.5); }
-  if (a < ${MAPS[1].half * 0.98}) { range = vec2(${MAPS[1].range[0]}.0, ${MAPS[1].range[1] - MAPS[1].range[0]}.0); return texture2D(uMap1, P / ${2 * MAPS[1].half}.0 + 0.5); }
-  range = vec2(${MAPS[2].range[0]}.0, ${MAPS[2].range[1] - MAPS[2].range[0]}.0);
-  return texture2D(uMap2, P / ${2 * MAPS[2].half}.0 + 0.5);
+  if (a < ${glf(MAPS[0] * 0.98)}) return texture2D(uMap0, P / ${glf(2 * MAPS[0])} + 0.5);
+  if (a < ${glf(MAPS[1] * 0.98)}) return texture2D(uMap1, P / ${glf(2 * MAPS[1])} + 0.5);
+  if (a < ${glf(MAPS[2] * 0.98)}) return texture2D(uMap2, P / ${glf(2 * MAPS[2])} + 0.5);
+  return texture2D(uMap3, P / ${glf(2 * MAPS[3])} + 0.5);
 }
-float mapH(vec2 P) { vec2 r; float h = mapTexel(P, r).r; return h * r.y + r.x; }
-vec3 mapAt(vec2 P) { vec2 r; vec4 t = mapTexel(P, r); return vec3(t.r * r.y + r.x, t.g, t.b); }
+// Metres per texel of the map that covers P.
+float mapEps(vec2 P) {
+  float a = max(abs(P.x), abs(P.y));
+  return (a < ${glf(MAPS[0] * 0.98)} ? ${glf(MAPS[0])} : a < ${glf(MAPS[1] * 0.98)} ? ${glf(MAPS[1])} : a < ${glf(MAPS[2] * 0.98)} ? ${glf(MAPS[2])} : ${glf(MAPS[3])}) / ${glf(MAP_N / 2)};
+}
+float heightOf(vec4 m) { return (m.r + m.g / 255.0) * ${glf(MAP_H[1] - MAP_H[0])} + (${glf(MAP_H[0])}); }
+float mapH(vec2 P) { return heightOf(mapTexel(P)); }
 
-// Distance along rd from ro to the ground or the water, or -1; tLo: a
-// distance short of the ground.
-float hitGround(vec3 ro, vec3 rd, float tMax, out float tLo) {
-  float t = 0.2, tPrev = 0.0, dPrev = ro.z - max(mapH(ro.xy), WATER);
-  tLo = 0.0;
+// Distance along rd from ro to the ground or the water, or -1.  The steps
+// grow with distance; they stay short near things that are thin.
+float hitGround(vec3 ro, vec3 rd, float tMax) {
+  float t = 0.2, tPrev = 0.0;
   float climb = rd.z / max(length(rd.xy), 1e-4);
-  for (int i = 0; i < 128; i++) {
+  float d = 9.0;
+  for (int i = 0; i < 256; i++) {
     vec3 p = ro + rd * t;
-    float d = p.z - max(mapH(p.xy), WATER);
-    if (d < 0.0) { tLo = tPrev; return mix(tPrev, t, dPrev / (dPrev - d)); }
-    if (climb > 0.05 && p.z > 45.0 + 80.0 * smoothstep(350.0, 2000.0, length(p.xy))) return -1.0;
-    tPrev = t; dPrev = d;
-    t += max(0.045 * t + 0.08, 0.5 * d);
+    vec4 m = mapTexel(p.xy);
+    d = p.z - max(heightOf(m), WATER);
+    if (d < 0.0) {
+      float a = tPrev, b = t;
+      for (int k = 0; k < 6; k++) {
+        float mid = 0.5 * (a + b);
+        vec3 q = ro + rd * mid;
+        if (q.z > max(mapH(q.xy), WATER)) a = mid; else b = mid;
+      }
+      return 0.5 * (a + b);
+    }
+    if (climb > 0.05 && p.z > 80.0 + 80.0 * smoothstep(350.0, 2000.0, length(p.xy))) return -1.0;
+    tPrev = t;
+    float st = max(0.045 * t + 0.08, 0.5 * d);
+    if (m.b > 0.01) st = min(st, max(5.4 * (1.0 - m.b), min(0.4 * d, 0.7)));   // not past the nearest tree
+    if (d < 3.0) st = min(st, 0.012 * t + 0.35);             // nor past boulders and brush, low down
+    t += max(st, 0.003 * t + 0.1);
     if (t > tMax) return -1.0;
   }
-  return -1.0;
+  return d < 30.0 ? t : -1.0;
 }
 
-// The hit moved onto the full-detail surface (the maps are 8-bit), between a and b.
-float refineHit(vec3 ro, vec3 rd, float a, float b) {
-  b = b + (b - a) * 0.5;
-  for (int i = 0; i < 6; i++) {
-    float m = 0.5 * (a + b);
-    vec3 p = ro + rd * m;
-    if (p.z > max(terrainAt(p.xy, 7).x, WATER)) a = m; else b = m;
-  }
-  return 0.5 * (a + b);
-}
-
-// Sunlight reaching p past the terrain, softened (0 .. 1); far points
-// start further out, past the maps' coarser steps.
-float sunPast(vec3 p, float far) {
+// Sunlight reaching p past the terrain, softened (0 .. 1).
+float sunPast(vec3 p) {
   if (uSun.z < -0.03) return 0.0;
-  float res = 1.0, t = 1.2 + 0.02 * far;
-  for (int i = 0; i < 22; i++) {
+  float res = 1.0, t = 0.5;
+  for (int i = 0; i < 30; i++) {
     vec3 q = p + uSun * t;
     float d = q.z - mapH(q.xy);
-    res = min(res, 4.0 * d / t);
-    if (res < 0.0 || q.z > 130.0) break;
-    t += max(0.8, t * 0.3);
+    res = min(res, 6.0 * d / t);
+    if (res < 0.0 || q.z > 170.0) break;
+    t += max(0.9, 0.13 * t);
   }
   return clamp(res, 0.0, 1.0) * uSunOverHills;
 }
 
+// Sunlight the cumulus lets through to the ground at P (m).
+float cloudShade(vec2 P) {
+  if (uSun.z < 0.02) return 1.0;
+  return 1.0 - 0.8 * cumulus(P / 1000.0 + uSun.xy / max(uSun.z, 0.08) * 2.0, 0.1);
+}
+
+// Sunlight past the dishes at P on the ground (m): each dish shades a disc.
+float dishShade(vec2 P) {
+  if (uSun.z < 0.03) return 1.0;
+  vec2 g = (P + uSun.xy / uSun.z * 2.6 - uArrayBox.xy) / uSpacing + 0.5 * (uCount - 1.0);
+  vec2 i = clamp(floor(g + 0.5), vec2(0.0), uCount - 1.0);
+  return 0.12 + 0.88 * smoothstep(2.6, 3.3, length((g - i) * uSpacing));
+}
+
+// The bunchgrass standing at Q (m): its height, 0..1 of GRASS.
+float grassH(vec2 Q) {
+  float bunch = smoothstep(0.15, 0.5, noise(Q * 6.0));
+  return bunch * (0.3 + 0.7 * noise(mat2(0.8, 0.6, -0.6, 0.8) * Q * 41.0));
+}
+
+// The cover of the ground from a map texel: rock, brush and tree, each 0..1.
+vec3 coverOf(vec4 m) {
+  float woody = clamp(2.0 * m.a - 1.0, 0.0, 1.0);
+  float tree = smoothstep(0.6, 0.85, woody);
+  return vec3(clamp(1.0 - 2.0 * m.a, 0.0, 1.0), smoothstep(0.1, 0.35, woody) * (1.0 - tree), tree);
+}
+
 // A cheap view of the terrain, from the maps alone (in the lake's mirror).
 vec3 terrainCheap(vec3 p) {
-  vec3 m = mapAt(p.xy);
-  float s = 3.0;
+  vec4 m = mapTexel(p.xy);
+  vec3 cov = coverOf(m);
+  float s = max(1.5 * mapEps(p.xy), 1.0);
   vec3 n = normalize(vec3(mapH(p.xy - vec2(s, 0.0)) - mapH(p.xy + vec2(s, 0.0)), mapH(p.xy - vec2(0.0, s)) - mapH(p.xy + vec2(0.0, s)), 2.0 * s));
-  vec3 alb = mix(mix(vec3(0.30, 0.245, 0.14), vec3(0.17, 0.21, 0.10), m.b * 0.8), vec3(0.30, 0.29, 0.27), m.g);
-  return litS(alb, n, uSunOverHills, 1.0);
+  vec3 alb = mix(vec3(0.33, 0.27, 0.15), vec3(0.30, 0.29, 0.27), max(cov.x, smoothstep(0.28, 0.5, 1.0 - n.z)));
+  alb = mix(alb, vec3(0.24, 0.26, 0.19), cov.y);
+  alb = mix(alb, vec3(0.06, 0.09, 0.05), cov.z);
+  return litS(alb, n, uSunOverHills * cloudShade(p.xy), 1.0);
 }
 
 // What the water mirrors along r from p.
 vec3 mirrored(vec3 p, vec3 r, float pix) {
-  float tLo, t = hitGround(p + vec3(0.0, 0.0, 0.05), r, 1800.0, tLo);
+  float t = hitGround(p + vec3(0.0, 0.0, 0.05), r, 1800.0);
   if (t > 0.0) {
     vec3 q = p + r * t;
-    return mix(terrainCheap(q), hazeAt(normalize(r.xy + 1e-6)), 1.0 - exp(-t / 6000.0));
+    return mix(terrainCheap(q), hazeAt(normalize(r.xy + 1e-6)), 1.0 - exp(-t / 5000.0));
   }
   float ralt = asin(r.z) / DEG, rhz = skyline(atan(r.x, r.y) / DEG);
   if (ralt < rhz) return hillsAt(r, ralt, rhz, pix);
@@ -505,13 +634,15 @@ vec3 groundAt(vec3 e, float t, float pix) {
   vec3 p = vec3(0.0, 0.0, uEyeH) + e * t;
   vec2 P = p.xy;
   vec2 hd = length(e.xy) > 1e-5 ? normalize(e.xy) : vec2(0.0, 1.0);
+  vec4 m = mapTexel(P);
+  float h = heightOf(m);
   float lod = t * pix / max(-e.z, 0.12);                  // metres per pixel along the ground, about
-  int oct = int(clamp(9.0 - log2(max(lod, 0.01) * 40.0), 3.0, 9.0));
-  vec4 T = terrainAt(P, oct);
   float gust = fbm(P * 0.06 - uWind * uTime * 0.25, lod * 0.06);
+  float sheen = smoothstep(0.45, 0.75, gust);
+  float shade = cloudShade(P);
   vec3 c;
-  if (T.x < WATER && p.z <= WATER + 0.05) {
-    // Water: wind ripples in gusts, the mirror, and the bed in the shallows.
+  if (h < WATER && p.z <= WATER + 0.05) {
+    // Water: wind ripples in gusts, the mirror, the Sun's glitter, and the bed in the shallows.
     vec2 rp = P * 1.1 - uWind * uTime * 1.2;
     float h0 = noise(rp), hx = noise(rp + vec2(0.1, 0.0)), hy = noise(rp + vec2(0.0, 0.1));
     float amp = (0.004 + 0.02 * smoothstep(0.5, 0.75, gust)) * clamp(1.5 - lod * 2.2, 0.0, 1.0);
@@ -519,74 +650,135 @@ vec3 groundAt(vec3 e, float t, float pix) {
     vec3 r = reflect(e, n);
     r = normalize(vec3(r.xy, max(r.z, 0.002)));
     float F = 0.02 + 0.98 * pow(1.0 - max(dot(-e, n), 0.0), 5.0);
-    float depth = WATER - T.x;
-    vec3 bed = litS(mix(vec3(0.34, 0.33, 0.28), vec3(0.03, 0.06, 0.06), smoothstep(0.1, 2.0, depth)), vec3(0.0, 0.0, 1.0), sunPast(p, t), 1.0);
+    float depth = WATER - h;
+    float sun = sunPast(p) * shade;
+    vec3 bed = litS(mix(vec3(0.34, 0.33, 0.28), vec3(0.03, 0.06, 0.06), smoothstep(0.1, 2.0, depth)), vec3(0.0, 0.0, 1.0), sun, 1.0);
     c = mix(bed, mirrored(p, r, pix), F);
+    c += curve(uSunLin * 30.0 * pow(max(dot(r, uSun), 0.0), 900.0) * sun) * F;
   } else {
-    float e1 = max(lod, 0.06);
-    vec3 n = normalize(vec3(T.x - terrainAt(P + vec2(e1, 0.0), oct).x, T.x - terrainAt(P + vec2(0.0, e1), oct).x, e1));
+    float ep = max(1.5 * mapEps(P), lod);
+    vec3 n = normalize(vec3(mapH(P - vec2(ep, 0.0)) - mapH(P + vec2(ep, 0.0)), mapH(P - vec2(0.0, ep)) - mapH(P + vec2(0.0, ep)), 2.0 * ep));
+    lod = t * pix / max(dot(-e, n), 0.15);
     float near = clamp(1.5 - lod * 2.5, 0.0, 1.0);           // detail fades out with distance
-    float slope = 1.0 - n.z;
-    // Grass: dry gold, greener where it is wet; bunches; the pale side shows where gusts bend it.
-    float patches = fbm(P * 0.03, lod * 0.03);
-    vec3 alb = mix(vec3(0.31, 0.25, 0.14), vec3(0.15, 0.19, 0.08), clamp(T.z * 0.9 + (patches - 0.5) * 0.8, 0.0, 1.0));
-    alb *= 0.78 + 0.44 * mix(0.5, noise(P * 9.0 + 3.0), clamp(1.5 - lod * 20.0, 0.0, 1.0));
-    float sheen = smoothstep(0.45, 0.75, gust);
-    // Close by: tufts, and blades laid over by the wind, swaying.
-    if (lod < 0.06) {
-      float sway = sin(uTime * 2.6 + dot(P, uWind) * 1.3) * (0.3 + sheen) * 0.04;
-      vec2 off;
-      vec3 tf = cells(P * 6.0 - uWind * sway * 6.0, off);
-      vec2 w = vec2(dot(P, uWind), dot(P, vec2(-uWind.y, uWind.x)));
-      float blades = noise(vec2(w.x * 9.0, w.y * 18.0) + uWind * sway * 20.0);
-      float k = clamp(1.5 - lod * 40.0, 0.0, 1.0);
-      alb *= mix(1.0, (0.7 + 0.45 * under(0.1, 0.55, tf.x)) * (0.8 + 0.4 * blades), k);
-    }
-    alb = mix(alb, alb * 1.4 + vec3(0.03, 0.03, 0.02), sheen * 0.7);
-    // Bare soil on the steeper slopes.
-    alb = mix(alb, vec3(0.27, 0.22, 0.17), smoothstep(0.12, 0.3, slope) * 0.6);
-    // Rock: crests and boulders, cracked, with lichen.
-    float rock = clamp(T.y * smoothstep(0.12, 0.3, slope) * 1.6 + smoothstep(0.35, 0.55, slope), 0.0, 1.0);
-    if (rock > 0.01) {
-      float crack = 1.0 - abs(2.0 * fbm(P * 0.9 + 4.0, lod * 0.9) - 1.0);
-      float vein = fbm(P * 0.15 + 8.0, lod * 0.15);
-      vec3 stone = mix(vec3(0.20, 0.18, 0.16), vec3(0.32, 0.30, 0.27), vein) * (0.65 + 0.5 * fbm(P * 0.6, lod * 0.6));
-      stone = mix(stone, vec3(0.38, 0.32, 0.12), smoothstep(0.72, 0.8, noise(P * 3.0 + 9.0)) * near * 0.7);   // lichen
-      stone *= 1.0 - 0.6 * smoothstep(0.9, 0.98, crack) * near;
-      alb = mix(alb, stone, smoothstep(0.3, 0.6, rock));
-      n = normalize(n + vec3((fbm(P * 0.7 + 2.0, lod * 0.7) - 0.5), (fbm(P * 0.7 + 7.0, lod * 0.7) - 0.5), 0.0) * 0.9 * rock * near);
-    }
-    // The array's gravel pad.
+    float slope = 1.0 - n.z, above = h - WATER;
+    vec3 cov = coverOf(m);
+    float woody = max(cov.y, cov.z);
+    float rock = clamp(max(cov.x * 1.6, smoothstep(0.28, 0.5, slope)) * (1.0 - smoothstep(0.0, 0.2, woody)), 0.0, 1.0);
     vec2 pq = abs(P - uArrayBox.xy) - uArrayBox.zw + 2.0;
     float onPad = 1.0 - smoothstep(-0.5, 0.5, max(pq.x, pq.y));
-    alb = mix(alb, vec3(0.30, 0.29, 0.27) * (0.85 + 0.3 * noise(P * 4.0)), onPad);
-    // The alkali crust and the wet band along the shore.
-    float above = T.x - WATER;
-    alb = mix(alb, vec3(0.50, 0.48, 0.42), (1.0 - smoothstep(0.25, 0.6, above)) * (1.0 - rock));
-    alb = mix(alb, vec3(0.13, 0.13, 0.11), 1.0 - smoothstep(0.03, 0.18, above));
-    float ao = 1.0;
-    // Sagebrush and antelope-brush (in the terrain's shape near by; far off, a tint).
-    vec3 leaf = mix(vec3(0.24, 0.27, 0.22), vec3(0.30, 0.29, 0.21), noise(P * 0.5)) * (0.75 + 0.5 * noise(P * 7.0));
-    alb = mix(alb, leaf, T.w);
-    // Flowers: balsamroot yellow, lupine violet and yarrow white, nodding in
-    // the wind; far off, a tint where they grow.
-    float bloom = smoothstep(0.5, 0.75, noise(P * 0.08 + 60.0) + T.z * 0.25) * step(0.4, above) * (1.0 - rock) * (1.0 - T.w);
-    if (bloom > 0.0 && lod < 0.12) {
-      vec2 sway = uWind * 0.06 * sin(uTime * 2.2 + dot(P, uWind) * 0.9) * (0.4 + sheen), foff;
-      vec3 fc = cells((P - sway) * 2.0, foff);
-      float rad = 0.2 * step(fc.y, 0.55) * bloom;
-      if (fc.x < rad) {
-        vec3 petal = fc.z < 0.45 ? vec3(0.80, 0.62, 0.06) : fc.z < 0.8 ? vec3(0.36, 0.24, 0.62) : vec3(0.78, 0.78, 0.72);
-        alb = mix(alb, petal, clamp(1.5 - lod * 12.0, 0.0, 1.0) * smoothstep(rad, rad * 0.6, fc.x));
+    float wet = under(0.1, 0.7, above);
+    float grassy = (1.0 - rock) * (1.0 - onPad) * (1.0 - woody) * smoothstep(0.15, 0.4, above);
+    float bloom = smoothstep(0.5, 0.75, noise(P * 0.08 + 60.0) + wet * 0.2) * grassy;
+
+    // Grass.  Close by it stands in relief: the ray is marched down through
+    // the bunches, bent by the wind, with flowers among them.  f: how high
+    // in the grass the ray stops (0 the soil .. 1); Q: where; fl: 0, or a
+    // flower's kind (1 .. 2); lit: sunlight past the bunches next to it.
+    float f = grassH(P) * near + 0.34 * (1.0 - near), fl = 0.0, lit = 1.0;
+    vec2 Q = P;
+    float k = clamp(1.6 - t / 30.0, 0.0, 1.0) * step(0.5, grassy);
+    if (k > 0.0) {
+      float Hm = GRASS * k * (0.5 + 0.5 * noise(P * 0.9 + 9.0));       // taller and shorter stands
+      float rate = max(dot(-n.xy / max(n.z, 0.2), e.xy) - e.z, 0.03);    // height lost per metre of ray
+      float back = min(1.3 * Hm / rate, 5.0), dt = back / 26.0;
+      float jit = texture2D(uNoise, gl_FragCoord.xy / 256.0).a;
+      float bend = (0.05 + 0.12 * sheen) * (0.7 + 0.3 * sin(uTime * 2.6 + dot(P, uWind) * 1.3));
+      f = 0.0;
+      for (int i = 0; i < 26; i++) {
+        float tau = back - (float(i) + jit) * dt;            // metres short of the ground
+        float s = tau * rate / Hm;
+        vec2 q = P - e.xy * tau - uWind * bend * s * s;
+        if (bloom > 0.0) {
+          vec2 gi = floor(q * 3.0);
+          vec4 rr = texture2D(uNoise, (gi + 0.5) / 256.0);
+          float top = 0.75 + 0.5 * rr.a;
+          if (rr.r < bloom * 0.4 && s < top && length(q * 3.0 - gi - 0.25 - 0.5 * rr.gb) < 0.11) {
+            f = s; Q = q; fl = s > top - 0.2 - 0.25 * step(0.45, rr.a) ? 1.0 + rr.a : 0.5;
+            break;
+          }
+        }
+        if (s < grassH(q)) {
+          float a = tau + dt, b = tau;                       // close in on the blade's edge
+          for (int j = 0; j < 4; j++) {
+            float mid = 0.5 * (a + b), sm = mid * rate / Hm;
+            if (sm < grassH(P - e.xy * mid - uWind * bend * sm * sm)) b = mid; else a = mid;
+          }
+          f = b * rate / Hm; Q = P - e.xy * b - uWind * bend * f * f;
+          break;
+        }
+      }
+      if (uSun.z > 0.03) {
+        vec2 sd = normalize(uSun.xy + 1e-6);
+        float rise = uSun.z / max(length(uSun.xy), 0.05) / Hm;
+        for (int j = 1; j <= 5; j++) {
+          float d = 0.05 * float(j), s2 = f + d * rise;
+          if (s2 < 1.0 && s2 < grassH(Q + sd * d)) lit -= 0.19;
+        }
       }
     }
-    alb = mix(alb, vec3(0.62, 0.50, 0.20), bloom * 0.12 * clamp(lod * 12.0 - 0.5, 0.0, 1.0));
-    float sun = sunPast(p + n * (0.35 + 0.004 * t), t);
+    float fine = mix(0.5, noise(Q * 31.0), clamp(1.5 - lod * 60.0, 0.0, 1.0));
+    float tex = fbm(Q * 1.7 + 5.0, lod * 1.7);
+    float patches = fbm(P * 0.025 + 1.0, lod * 0.025);
+    vec3 straw = mix(vec3(0.44, 0.36, 0.20), vec3(0.30, 0.21, 0.12), smoothstep(0.3, 0.7, tex));   // cured blades, pale to russet
+    straw = mix(straw, vec3(0.19, 0.24, 0.09), clamp(wet * 0.9 + (patches - 0.55) * 1.5, 0.0, 0.85));   // green where it is wet
+    straw *= 0.75 + 0.5 * fine;
+    straw = mix(straw, straw * 1.35 + vec3(0.03, 0.03, 0.02), sheen * 0.6 * smoothstep(0.3, 0.9, f));   // gusts show the pale side
+    vec3 soil = mix(vec3(0.15, 0.115, 0.08), straw * 0.55, smoothstep(0.45, 0.7, noise(Q * 19.0 + 7.0)) * near);   // soil and litter
+    vec3 alb = mix(soil, straw, smoothstep(0.0, 0.2, f));
+    float ao = 0.4 + 0.6 * smoothstep(0.0, 0.7, f);
+    if (fl > 0.9) {
+      // Balsamroot yellow, lupine violet and yarrow white.
+      alb = fl < 1.45 ? vec3(0.85, 0.63, 0.05) : fl < 1.8 ? vec3(0.37, 0.25, 0.66) : vec3(0.80, 0.80, 0.74);
+      ao = 1.0; lit = 1.0;
+    } else if (fl > 0.0) { alb = vec3(0.16, 0.22, 0.08); ao = 0.8; }
+    alb = mix(alb, vec3(0.64, 0.52, 0.20), bloom * 0.12 * (1.0 - k));        // far off, a tint where the flowers grow
+
+    // Rock: crags, boulders and steep faces; bedded, cracked, with lichen.
+    if (rock > 0.01) {
+      float warp = fbm(P * 0.25 + 4.0, lod * 0.25);
+      float beds = fbm(vec2(p.z * 2.2 + warp * 3.0, dot(P, vec2(0.05, 0.03))), lod * 2.2);
+      float crack = 1.0 - abs(2.0 * fbm(P * 0.9 + 4.0, lod * 0.9) - 1.0);
+      vec3 stone = mix(vec3(0.17, 0.16, 0.15), vec3(0.37, 0.34, 0.30), beds) * (0.7 + 0.5 * fbm(P * 2.3, lod * 2.3));
+      stone = mix(stone, vec3(0.40, 0.33, 0.11), smoothstep(0.70, 0.78, noise(P * 3.0 + 9.0)) * near * 0.7);   // lichen
+      stone = mix(stone, vec3(0.30, 0.36, 0.30), smoothstep(0.74, 0.80, noise(P * 4.1 + 31.0)) * near * 0.5);
+      stone *= 1.0 - 0.6 * smoothstep(0.9, 0.98, crack) * near;
+      alb = mix(alb, stone, smoothstep(0.25, 0.6, rock));
+      ao = mix(ao, 0.75 + 0.25 * beds, smoothstep(0.25, 0.6, rock));
+      n = normalize(n + vec3(fbm(P * 1.1 + 2.0, lod * 1.1) - 0.5, fbm(P * 1.1 + 7.0, lod * 1.1) - 0.5, 0.0) * 1.1 * rock * near);
+    }
+    // The array's gravel pad.
+    alb = mix(alb, vec3(0.31, 0.30, 0.28) * (0.8 + 0.25 * noise(P * 4.0) + 0.2 * fine), onPad);
+    ao = mix(ao, 1.0, onPad);
+    // The alkali crust above the water, cracked, and the wet band at its edge.
+    float crust = under(0.3, 0.75, above + (patches - 0.5) * 0.4) * (1.0 - rock) * (1.0 - woody);
+    float flakes = 1.0 - 0.35 * smoothstep(0.82, 0.95, 1.0 - abs(2.0 * fbm(P * 1.6 + 2.0, lod * 1.6) - 1.0)) * near;
+    alb = mix(alb, vec3(0.56, 0.54, 0.48) * flakes, crust);
+    alb = mix(alb, vec3(0.13, 0.13, 0.11), (1.0 - smoothstep(0.03, 0.18, above)) * (1.0 - woody));
+    ao = mix(ao, 1.0, crust);
+    // Sagebrush, and reeds by the water: clumps of leaves over dark gaps.
+    if (cov.y > 0.0) {
+      float clump = fbm(P * 5.0 + 3.0, lod * 5.0), leaves = mix(0.5, noise(P * 37.0), clamp(1.5 - lod * 70.0, 0.0, 1.0));
+      vec3 leaf = mix(vec3(0.27, 0.31, 0.25), vec3(0.33, 0.31, 0.21), noise(P * 0.5));
+      leaf = mix(leaf, mix(vec3(0.36, 0.31, 0.15), vec3(0.17, 0.24, 0.09), noise(P * 2.0 + 8.0)), under(0.9, 1.6, above));   // reeds
+      leaf *= (0.45 + 0.9 * smoothstep(0.3, 0.7, clump)) * (0.8 + 0.4 * leaves);
+      alb = mix(alb, leaf, cov.y);
+      ao = mix(ao, 0.55 + 0.45 * smoothstep(0.3, 0.7, clump), cov.y);
+    }
+    // Firs: boughs in tiers, dark between them.
+    if (cov.z > 0.0) {
+      float tier = 0.5 + 0.5 * sin(p.z * 5.0 + 4.0 * noise(P * 0.9));
+      float bough = fbm(P * 2.6 + p.z * 0.7, lod * 2.6);
+      vec3 fir = mix(vec3(0.03, 0.05, 0.03), vec3(0.075, 0.125, 0.06), smoothstep(0.35, 0.7, bough) * (0.5 + 0.5 * tier * near));
+      alb = mix(alb, fir, cov.z);
+      ao = mix(ao, 0.5 + 0.5 * smoothstep(0.3, 0.7, bough), cov.z);
+    }
+    float sun = sunPast(p + n * (0.3 + 0.004 * t) + vec3(0.0, 0.0, GRASS * k * f)) * shade * lit;
+    if (onPad > 0.0 || length(P - uArrayBox.xy) < 90.0) sun *= dishShade(P);
     c = litS(alb, n, sun, ao * (0.75 + 0.25 * n.z));
     float back = pow(max(dot(hd, normalize(uSun.xy + 1e-6)), 0.0), 3.0) * max(uSun.z + 0.05, 0.0);   // light through the blades
-    c += curve(uSunLin * vec3(0.30, 0.25, 0.08) * back * (0.4 + sheen) * sun * (1.0 - rock)) * 0.5;
+    c += curve(uSunLin * vec3(0.30, 0.25, 0.08) * back * (0.3 + sheen) * sun * grassy * smoothstep(0.2, 0.8, f)) * 0.5;
   }
-  return mix(c, hazeAt(hd), 1.0 - exp(-t / 7000.0));
+  return mix(c, hazeAt(hd), 1.0 - exp(-t / 5000.0));
 }
 
 void main() {
@@ -604,9 +796,7 @@ void main() {
   bool below = alt < hz;
   float tLand = -1.0;
   if (uDome > 0.5 && uGround > 0.5 && uLand > 0.5 && alt < hz + 4.0) {
-    float tLo;
-    tLand = hitGround(vec3(0.0, 0.0, uEyeH), e, 2600.0, tLo);
-    if (tLand > 0.0 && tLand < 200.0) tLand = refineHit(vec3(0.0, 0.0, uEyeH), e, tLo, tLand);
+    tLand = hitGround(vec3(0.0, 0.0, uEyeH), e, 2600.0);
   }
   if (uDome > 0.5 && uLand > 0.5 && (!below || uGround < 0.5) && tLand < 0.0) {
     vec3 sky = skyAt(e);
@@ -726,7 +916,7 @@ export class SkyGL {
     gl.uniform1f(u.uEyeH, t.eyeH);
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
     gl.viewport(0, 0, MAP_N, MAP_N);
-    this.maps = MAPS.map((m, i) => {
+    this.maps = MAPS.map((half, i) => {
       gl.activeTexture(gl.TEXTURE4 + i);
       const tex = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -734,9 +924,8 @@ export class SkyGL {
       for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR],
         [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
-      gl.uniform1f(u.uHalf, m.half);
-      gl.uniform2f(u.uRange, m.range[0], m.range[1]);
-      gl.uniform1i(u.uOctaves, m.octaves);
+      gl.uniform1f(u.uHalf, half);
+      gl.uniform1f(u.uTexel, 2 * half / MAP_N);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       return tex;
     });

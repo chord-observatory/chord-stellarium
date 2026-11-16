@@ -407,7 +407,7 @@ function loop(now) {
     const resized = govern(now - lastWind, now);
     lastWind = now;
     glParams.time = windTime();
-    if (!resized) gl.draw(glParams);                         // else the next frame renders afresh
+    if (resized) { dirty = false; render(); } else gl.draw(glParams);
   }
   if (!windBlows() && glScale !== 1) { glScale = 1; sizeSky(); }
   if (st.layers.pulsars && blink.length) drawPulsarBlink($("fx").getContext("2d"), blink, now / 1000, dpr, st.view.w, st.view.h, reducedMotion);

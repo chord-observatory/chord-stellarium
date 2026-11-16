@@ -6,7 +6,8 @@
 //          dome='t=2026-10-30T10:59:20Z' chart='t=2026-10-30T10:59:20Z&v=chart'
 //
 // Needs puppeteer (npm install puppeteer in a scratch directory; cx69 has
-// the libraries Chrome needs).  WebGL runs on SwiftShader.
+// the libraries Chrome needs).  WebGL runs on SwiftShader, or with GPU=1
+// on the host's GPU (cx69's A40s work: far faster for the Landscape).
 
 import puppeteer from "puppeteer";
 
@@ -14,7 +15,8 @@ const [base, outDir, size, ...jobs] = process.argv.slice(2);
 const [width, height] = size.split("x").map(Number);
 const browser = await puppeteer.launch({
   headless: true,
-  args: ["--no-sandbox", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"],
+  args: ["--no-sandbox", "--ignore-gpu-blocklist", ...(process.env.GPU
+    ? ["--use-gl=angle", "--use-angle=gl-egl", "--enable-gpu"] : ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"])],
 });
 let errors = 0;
 for (const job of jobs) {

@@ -125,14 +125,17 @@ PUPPETEER_CACHE_DIR=$D/cache node shots.mjs http://127.0.0.1:8765/ $D/shots 1400
   the ground, the dishes and the clouds comes from the same model, and
   the Sun goes behind the real skyline.
 - The clouds and the terrain are made up. The clouds are fractal noise
-  on a steady wind. The landscape is a terrain
-  function (`terrainAt` in `skygl.js`) baked once into three height maps
-  and ray-marched per pixel: knolls, rocks, sagebrush, flowers and grass
-  in the wind, and a lake whose shore is where the terrain meets the
-  water. It is levelled where the dishes stand and along the sight lines
-  to them and to the lake, so the 2D-drawn dishes are never hidden. While
-  the wind blows the sky redraws every frame, at a lower resolution on a
-  slow GPU (`govern` in `app.js`).
+  on a steady wind, and shade the ground. The terrain is a function
+  (`terrainAt` in `skygl.js`) baked once into four height maps (16-bit
+  heights, with firs, brush and boulders in the height itself) and
+  ray-marched per pixel: eroded hills, crags, stands of fir, sagebrush,
+  and a lake with reeds whose shore is where the terrain meets the water.
+  Within about 40 m the grass stands in relief: each ray is marched down
+  through the bunches, which bend in the wind, with flowers among them.
+  The terrain is levelled where the dishes stand and along the sight
+  lines to them and to the lake, so the 2D-drawn dishes are never hidden;
+  the dishes shade the ground. While the wind blows the sky redraws every
+  frame, at a lower resolution on a slow GPU (`govern` in `app.js`).
 
 ## Data and credits
 
