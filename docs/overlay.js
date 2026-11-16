@@ -400,7 +400,10 @@ export class Overlay {
     const ang = p0 && q ? Math.atan2(q[1] - p0[1], q[0] - p0[0]) : 0;
     this.at(m, (x, y) => {
       const r = Math.max(radiusPx(0.259), 5.5);
-      drawMoon(ctx, x, y, r, S.phase.phaseDeg, ang);
+      // Lunar north on screen: the ecliptic's pole, to within the Moon's 1.5 deg tilt.
+      const pole = [0, -0.39777716, 0.91748206], pm = dot(pole, m);
+      const qn = project(cam, norm(m.map((c, k) => c + 0.01 * (pole[k] - pm * c))));
+      drawMoon(ctx, x, y, r, S.phase.phaseDeg, ang, MOON.complete && MOON.naturalWidth ? MOON : null, qn ? Math.atan2(qn[1] - y, qn[0] - x) : -Math.PI / 2);
       this.hit(x, y, r + 3, S.moonObj);
       if (S.layers.labels) this.labels.add("Moon", x, y, { prio: 94, color: "rgba(230,232,240,0.9)", font: "600 12px var(--font)", gap: r + 5 });
     });
@@ -455,19 +458,39 @@ export class Overlay {
   }
 }
 
-/** The Moon's disc with its phase: lit side toward screen angle ang (radians). */
-function drawMoon(ctx, x, y, r, phaseDeg, ang) {
+// The Moon's near side, north up (tools/make_moon.py).
+const MOON = new Image();
+MOON.src = "moon.png";
+
+/** The Moon's disc with its phase: lit side toward screen angle ang
+ *  (radians).  img: its photograph (north up), turned so that north is
+ *  toward screen angle north; without it, a plain disc. */
+function drawMoon(ctx, x, y, r, phaseDeg, ang, img, north) {
+  const k = Math.cos(phaseDeg * DEG), rx = Math.max(Math.abs(k) * r, 0.01);
   ctx.save();
   ctx.translate(x, y);
-  ctx.rotate(ang);
-  ctx.fillStyle = "rgba(40,44,56,0.9)";
-  ctx.beginPath(); ctx.arc(0, 0, r, 0, 2 * Math.PI); ctx.fill();
-  const k = Math.cos(phaseDeg * DEG), rx = Math.abs(k) * r;
-  ctx.fillStyle = "#e9e6dc";
-  ctx.beginPath();
-  ctx.arc(0, 0, r, -Math.PI / 2, Math.PI / 2, false);     // the lit half, toward +x
-  ctx.ellipse(0, 0, Math.max(rx, 0.01), r, 0, Math.PI / 2, -Math.PI / 2, k < 0); // the terminator
-  ctx.fill();
+  if (img) {
+    ctx.save();
+    ctx.rotate(north + Math.PI / 2);
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, 2 * Math.PI); ctx.clip();
+    ctx.drawImage(img, -r, -r, 2 * r, 2 * r);
+    ctx.restore();
+    ctx.rotate(ang);
+    ctx.fillStyle = "rgba(10,12,20,0.9)";                   // the night side, with a little earthshine
+    ctx.beginPath();
+    ctx.arc(0, 0, r, Math.PI / 2, 1.5 * Math.PI, false);    // the dark half, toward -x
+    ctx.ellipse(0, 0, rx, r, 0, 1.5 * Math.PI, Math.PI / 2, k > 0);   // back along the terminator
+    ctx.fill();
+  } else {
+    ctx.rotate(ang);
+    ctx.fillStyle = "rgba(40,44,56,0.9)";
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, 2 * Math.PI); ctx.fill();
+    ctx.fillStyle = "#e9e6dc";
+    ctx.beginPath();
+    ctx.arc(0, 0, r, -Math.PI / 2, Math.PI / 2, false);     // the lit half, toward +x
+    ctx.ellipse(0, 0, rx, r, 0, Math.PI / 2, -Math.PI / 2, k < 0); // the terminator
+    ctx.fill();
+  }
   ctx.restore();
 }
 

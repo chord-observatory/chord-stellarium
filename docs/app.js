@@ -962,6 +962,7 @@ function credits() {
     `Pulsars: ${cat.credits.pulsars}.`,
     `Stars and constellations: ${cat.credits.stars}. Licence below.`,
     ...(horizon.flat ? [] : [`Skyline: computed from ${horizon.source} (https://registry.opendata.aws/terrain-tiles/).`]),
+    "The Moon's face: NASA's Scientific Visualization Studio, CGI Moon Kit, from the Lunar Reconnaissance Orbiter camera's mosaic (https://svs.gsfc.nasa.gov/4720).",
     "Positions of the Sun and the Moon: J. Meeus, Astronomical Algorithms, 2nd ed. (1998); precession IAU 1976. Checked against astropy.",
     "Planets: E. M. Standish, Keplerian Elements for Approximate Positions of the Major Planets (JPL), valid 1800–2050; within 2′ of astropy, Jupiter and Saturn within 10′.",
     "The drift trace's Sun is a quiet Sun of about 25 sfu at 400 MHz, rising as f^0.8, seen through the main lobe only. The active Sun is a few times brighter, and bursts far more.",
