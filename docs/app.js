@@ -26,8 +26,6 @@ const LAYERS = [
   ["strip", "Drift strip", true, "#ffffff"],
   ["trace", "Drift trace", true, "rgb(255,205,120)"],
   ["horizon", "Horizon", true, "rgb(150,220,175)"],
-  ["dishes", "Dishes", true, "#d9dee8"],
-  ["clouds", "Clouds (made up)", false, "#e9eef7"],
   ["land", "Landscape (made up)", false, "#c8b27a"],
   ["ecliptic", "Ecliptic", true, "rgb(240,205,110)"],
   ["grid_eq", "RA / Dec grid", false, "rgb(150,175,225)"],
@@ -246,7 +244,7 @@ function computeFrame() {
   const day = smooth(-12, 4, sunAlt), moonUp = smooth(-2, 6, A.altaz(moon.enu)[1]);
   const moonLin = MOON_LIGHT.map((x) => x * phase.illuminated * moonUp * (1 - day));
   const sunOverHills = smooth(-0.4, 0.4, sunAlt - skyline(A.altaz(sun.enu)[0]));
-  return { ob, sun, moon, phase, planets, decBore, boreEnu, boreJ2000, sunAlt, day, sky: skyFor(sunAlt), moonLin, sunOverHills };
+  return { ob, sun, moon, phase, planets, decBore, boreEnu, boreJ2000, sunAlt, day, sky: st.layers.land ? skyFor(sunAlt) : null, moonLin, sunOverHills };
 }
 
 // The daylight sky for each Sun altitude, to 0.2 deg (atmos.js takes tens of ms).
@@ -277,7 +275,7 @@ function sunMonths(ms) {
  *  Tau A, 81 for Cyg A). */
 function groundSpan() {
   const beamAlt = 90 - Math.abs(site.site.lat - pointingDec(A.observer(st.t, site.site)));
-  const lo = st.layers.dishes || st.layers.land ? -15 : skyline(180) - 4;
+  const lo = st.layers.land ? -15 : skyline(180) - 4;
   return [lo, Math.min(beamAlt + 8, 95)];
 }
 
@@ -310,13 +308,13 @@ function render() {
     dome: onSite, ground: st.layers.horizon, bore: frame.boreEnu,
     beamMode: { off: 0, dish: 1, array: 2 }[st.beamMode], beamGain: 1, band: st.band, array: site.array,
     sun: frame.sun.enu, moon: frame.moon.enu, moonLin: frame.moonLin,
-    clouds: st.layers.clouds, land: st.layers.land, time: windTime(), wind: WIND, eyeH: EYE_M, lake: LAKE,
+    land: st.layers.land, time: windTime(), wind: WIND, eyeH: EYE_M, lake: LAKE,
     arrayBox: arrayBox(), sunOverHills: frame.sunOverHills,
   };
-  gl.setSky(frame.sky);
+  if (frame.sky) gl.setSky(frame.sky);
   gl.draw(glParams);
   const fg = $("fg").getContext("2d");
-  if (onSite && st.layers.dishes) {
+  if (onSite && st.layers.land) {
     drawDishes(fg, {
       cam, dpr, ob: frame.ob, array: site.array, bore: frame.boreEnu,
       light: { sun: frame.sun.enu, moon: frame.moon.enu, sunLin: frame.sky.sunLin.map((x) => x * frame.sunOverHills),
@@ -385,7 +383,7 @@ function govern(dt, now) {
 
 /** Seconds of wind (wall clock, not the page's clock; wraps daily). */
 const windTime = () => (performance.now() / 1000) % 86400;
-const windBlows = () => (st.layers.clouds || st.layers.land) && st.view.kind !== "chart" && !reducedMotion;
+const windBlows = () => st.layers.land && st.view.kind !== "chart" && !reducedMotion;
 
 function loop(now) {
   requestAnimationFrame(loop);
@@ -923,10 +921,10 @@ function writeHash() {
 // ---------------------------------------------------------------- explain and credits
 
 const STEPS = [
-  ["The sky above the dishes", "You are standing on a rise behind the CHORD pathfinder at the Dominion Radio Astrophysical Observatory, near Penticton, BC. Drag to look in any direction; scroll to zoom. The dishes look where you look; they tilt when the pointing changes. The hills are the real skyline around the site. The colours show the radio sky at 408 MHz. The bright band is the Milky Way, where most of the radio emission comes from."],
+  ["The sky above the dishes", "You are standing at the CHORD pathfinder at the Dominion Radio Astrophysical Observatory, near Penticton, BC. Drag to look in any direction; scroll to zoom. The hills are the real skyline around the site. The colours show the radio sky at 408 MHz. The bright band is the Milky Way, where most of the radio emission comes from. Turn on the Landscape layer to see the dishes, tilted to the pointing, under the daylit sky, with made-up ground and clouds."],
   ["The beam", "The 64 dishes do not move. They all point at one declination on the meridian, the line from north to south through the zenith. The rings show where the beam has half its peak sensitivity, at the two ends of the chosen band. Low frequencies (red) see a wider patch of sky than high frequencies (violet)."],
   ["A drift scan", "The Earth turns, and the sky drifts through the beam once a day. The dashed lines show the strip of sky that passes through the beam. The dots along it show where the beam will point in the hours ahead, in local time."],
-  ["Radio sees in daylight", "In the ground and dome views the stars fade during the day, but the radio sky does not: radio waves pass through the daylit atmosphere, and through clouds too (turn on the made-up Clouds layer to see). The Sun is still a very bright radio source, so the panel tells you when it crosses the strip."],
+  ["Radio sees in daylight", "In the ground and dome views the stars fade during the day, but the radio sky does not: radio waves pass through the daylit atmosphere, and through clouds too (turn on the Landscape layer to see). The Sun is still a very bright radio source, so the panel tells you when it crosses the strip."],
   ["Frequency is distance", "Hydrogen gas emits at 1420 MHz. The expansion of the universe stretches that line to lower frequencies, so each frequency in the band sees hydrogen at one distance and one time in the past. The band panel shows the redshift and the lookback time."],
   ["The array beam", "Set the beam to Array to see the 8 × 8 grid of dishes added together. The narrow peaks repeat across the sky (grating lobes) because the dishes are evenly spaced. Over a wide band each lobe spreads into a small rainbow, because each frequency puts it at a different place."],
   ["Explore", "Select any object for its details, or search for it by name. Pulsars flash at their own period; the fastest show as a steady glow. Use the time controls to watch a day go by, or select a baseband dump to see where the dishes pointed when it was taken."],
@@ -958,7 +956,7 @@ function credits() {
     "Planets: E. M. Standish, Keplerian Elements for Approximate Positions of the Major Planets (JPL), valid 1800–2050; within 2′ of astropy, Jupiter and Saturn within 10′.",
     "The drift trace's Sun is a quiet Sun of about 25 sfu at 400 MHz, rising as f^0.8, seen through the main lobe only. The active Sun is a few times brighter, and bursts far more.",
     "Cosmology: flat ΛCDM with H₀ = 67.66 km/s/Mpc and Ωm = 0.3111 (Planck 2018).",
-    "Daylight and twilight: single scattering by air and aerosol, with ozone absorption, in a spherical atmosphere, plus an estimate of the higher orders; coefficients from E. Bruneton, A Qualitative and Quantitative Evaluation of 8 Clear Sky Models (2017). The Clouds and Landscape layers are made up; the dishes' shape is approximate.",
+    "Daylight and twilight: single scattering by air and aerosol, with ozone absorption, in a spherical atmosphere, plus an estimate of the higher orders; coefficients from E. Bruneton, A Qualitative and Quantitative Evaluation of 8 Clear Sky Models (2017). In the Landscape layer the ground, the lake and the clouds are made up, and the dishes' shape is approximate.",
     "The beam is a model: a Gaussian main lobe for each dish, times the array factor of an ideal 8 × 8 grid. The real beam has sidelobes and errors not shown here.",
     `Catalogue built ${cat.generated}.`,
   ];

@@ -117,12 +117,15 @@ PUPPETEER_CACHE_DIR=$D/cache node shots.mjs http://127.0.0.1:8765/ $D/shots 1400
 - The drift trace scales the 408 MHz map as f^-2.55, averages it over the
   dish beam and adds a quiet Sun: a model of one dish's total power, not
   a measurement.
-- In the ground and dome views the daylight is a model of the clear sky
-  for the Sun's true altitude, added over the radio sky (radio waves pass
-  through it). The light on the ground, the dishes and the clouds comes
-  from the same model, and the Sun goes behind the real skyline.
-- The Clouds and Landscape layers are made up, and off by default. The
-  clouds are fractal noise on a steady wind. The landscape is a terrain
+- The Landscape layer (off by default) holds the scenery of the ground
+  and dome views: the daylight, the dishes, the clouds and the terrain.
+  Without it the sky is the radio sky alone and the ground is plain.
+- The daylight is a model of the clear sky for the Sun's true altitude,
+  added over the radio sky (radio waves pass through it). The light on
+  the ground, the dishes and the clouds comes from the same model, and
+  the Sun goes behind the real skyline.
+- The clouds and the terrain are made up. The clouds are fractal noise
+  on a steady wind. The landscape is a terrain
   function (`terrainAt` in `skygl.js`) baked once into three height maps
   and ray-marched per pixel: knolls, rocks, sagebrush, flowers and grass
   in the wind, and a lake whose shore is where the terrain meets the

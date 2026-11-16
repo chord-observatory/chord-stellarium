@@ -181,8 +181,7 @@ uniform vec3 uSunHigh;
 uniform vec3 uAmbLin;       // a white level surface under the sky alone
 uniform vec3 uMoonLin;      // a white surface facing the Moon (made bright enough to see by)
 uniform float uStrength;    // the optical sky's share of the display
-uniform float uClouds;      // the Clouds layer
-uniform float uLand;        // the Landscape layer
+uniform float uLand;        // the Landscape layer: daylight, clouds, terrain
 uniform float uTime;        // seconds, for the wind
 uniform vec2 uWind;         // the wind's direction (east, north)
 uniform float uEyeH;        // the eye above the plain (m)
@@ -497,8 +496,8 @@ vec3 mirrored(vec3 p, vec3 r, float pix) {
   float ralt = asin(r.z) / DEG, rhz = skyline(atan(r.x, r.y) / DEG);
   if (ralt < rhz) return hillsAt(r, ralt, rhz, pix);
   vec3 sky = skyAt(r), radio = washed(radioAt(uFromEnu * r), sky);
-  if (uClouds > 0.5) { vec4 cl = cloudsAt(r, pix, sky + radio * 0.3); sky = cl.rgb + sky * (1.0 - cl.a); }
-  return sky + radio;
+  vec4 cl = cloudsAt(r, pix, sky + radio * 0.3);
+  return cl.rgb + sky * (1.0 - cl.a) + radio;
 }
 
 // The terrain where the view ray e meets it at distance t (metres).
@@ -609,11 +608,11 @@ void main() {
     tLand = hitGround(vec3(0.0, 0.0, uEyeH), e, 2600.0, tLo);
     if (tLand > 0.0 && tLand < 200.0) tLand = refineHit(vec3(0.0, 0.0, uEyeH), e, tLo, tLand);
   }
-  if (uDome > 0.5 && (!below || uGround < 0.5) && tLand < 0.0) {
+  if (uDome > 0.5 && uLand > 0.5 && (!below || uGround < 0.5) && tLand < 0.0) {
     vec3 sky = skyAt(e);
     col = washed(col, sky);
-    if (uClouds > 0.5) { vec4 cl = cloudsAt(e, pix, sky + col * 0.3); sky = cl.rgb + sky * (1.0 - cl.a); }
-    col += sky;                                                // radio waves pass through air and cloud
+    vec4 cl = cloudsAt(e, pix, sky + col * 0.3);
+    col += cl.rgb + sky * (1.0 - cl.a);                        // radio waves pass through air and cloud
   }
   if (uBeamMode > 0 && tLand < 0.0) col += beam(e) * uBeamGain;
   if (tLand > 0.0) col = groundAt(e, tLand, pix);
@@ -625,9 +624,8 @@ void main() {
       // skyline (the same in every direction: below the skyline the
       // distance to the terrain is not known).
       float depth = clamp((hz - alt) / 35.0, 0.0, 1.0);
-      vec3 g = litS(mix(vec3(0.07, 0.08, 0.07), vec3(0.035, 0.042, 0.038), sqrt(depth)), vec3(0.0, 0.0, 1.0), uSunOverHills, 1.0);
-      vec2 hd = length(e.xy) > 1e-5 ? normalize(e.xy) : vec2(0.0, 1.0);
-      col = mix(g, hazeAt(hd), 0.45 * exp(-(hz - alt) / 1.2));
+      vec3 g = mix(vec3(0.034, 0.042, 0.040), vec3(0.016, 0.020, 0.020), sqrt(depth));
+      col = mix(g, vec3(0.06, 0.08, 0.11), 0.35 * exp(-(hz - alt) / 1.2));
     }
   }
   gl_FragColor = vec4(col, 1.0);
@@ -760,7 +758,7 @@ export class SkyGL {
   }
 
   /** p: { cam, ob, dpr, stretch, skyGain, dome, ground, bore, beamMode, beamGain,
-   *       band: [lo, hi], array, sun, moon (ENU), moonLin, clouds, land, time,
+   *       band: [lo, hi], array, sun, moon (ENU), moonLin, land, time,
    *       wind, eyeH, lake: [east, north, radius east, radius north], arrayBox:
    *       [east, north, half east, half north], sunOverHills (0 .. 1) } */
   draw(p) {
@@ -794,13 +792,14 @@ export class SkyGL {
     gl.uniformMatrix3fv(u.uFromEnu, false, glMat(p.ob.fromEnu));
     gl.uniform3fv(u.uSun, p.sun);
     gl.uniform3fv(u.uMoon, p.moon);
-    gl.uniform3fv(u.uSunLin, m.sunLin);
-    gl.uniform3fv(u.uSunLow, m.sunLow);
-    gl.uniform3fv(u.uSunHigh, m.sunHigh);
-    gl.uniform3fv(u.uAmbLin, m.ambLin);
     gl.uniform3fv(u.uMoonLin, p.moonLin);
-    gl.uniform1f(u.uStrength, m.strength);
-    gl.uniform1f(u.uClouds, p.clouds ? 1 : 0);
+    if (m) {
+      gl.uniform3fv(u.uSunLin, m.sunLin);
+      gl.uniform3fv(u.uSunLow, m.sunLow);
+      gl.uniform3fv(u.uSunHigh, m.sunHigh);
+      gl.uniform3fv(u.uAmbLin, m.ambLin);
+      gl.uniform1f(u.uStrength, m.strength);
+    }
     gl.uniform1f(u.uLand, p.land ? 1 : 0);
     gl.uniform1f(u.uTime, p.time);
     gl.uniform2fv(u.uWind, p.wind);
