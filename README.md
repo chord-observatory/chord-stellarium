@@ -26,6 +26,7 @@ choice (Tau A, Cyg A or a declination), not read from the dishes.
 | `docs/skygl.js` | WebGL: the radio sky, daylight, the band-drawn beam, the ground; the made-up clouds and terrain | by hand |
 | `docs/atmos.js` | The daylight and twilight sky (scattering model) and its light, tabulated per Sun altitude | by hand |
 | `docs/dishes.js` | The 64 dishes, tilted to the pointing, on a 2D canvas | by hand |
+| `docs/terrain.png` | Real terrain heights 8 km around the site, for the Landscape | `tools/make_terrain.py` |
 | `docs/overlay.js` | Lines, markers, labels, pulsar blinking | by hand |
 | `docs/trace.js` | The drift-trace model under the sky | by hand |
 | `docs/site.json` | Site, array, pointings, calibrators, baseband dumps | **by hand** |
@@ -124,18 +125,24 @@ PUPPETEER_CACHE_DIR=$D/cache node shots.mjs http://127.0.0.1:8765/ $D/shots 1400
   added over the radio sky (radio waves pass through it). The light on
   the ground, the dishes and the clouds comes from the same model, and
   the Sun goes behind the real skyline.
-- The clouds and the terrain are made up. The clouds are fractal noise
-  on a steady wind, and shade the ground. The terrain is a function
-  (`terrainAt` in `skygl.js`) baked once into four height maps (16-bit
+- The terrain is part real. `terrain.png` (`tools/make_terrain.py`) holds
+  SRTM heights for 8 km around the site; from 260 m to 700 m out the
+  made-up near ground turns into it, so the hills are the real ones, with
+  made-up gullies and firs (more on slopes that face north). `skygl.js`
+  bakes the terrain (`terrainAt`) once into four height maps (16-bit
   heights, with firs, brush and boulders in the height itself) and
-  ray-marched per pixel: eroded hills, crags, stands of fir, sagebrush,
+  ray-marches them per pixel. The real skyline (`horizon.json`) is still
+  what hides the Sun, and backs the terrain beyond 8 km.
+- Near the observer the ground is made up: a plain, knolls, sagebrush,
   and a lake with reeds whose shore is where the terrain meets the water.
   Within about 40 m the grass stands in relief: each ray is marched down
   through the bunches, which bend in the wind, with flowers among them.
-  The terrain is levelled where the dishes stand and along the sight
-  lines to them and to the lake, so the 2D-drawn dishes are never hidden;
-  the dishes shade the ground. While the wind blows the sky redraws every
-  frame, at a lower resolution on a slow GPU (`govern` in `app.js`).
+  It is levelled where the dishes stand and along the sight lines to them
+  and to the lake, so the 2D-drawn dishes are never hidden; the dishes
+  shade the ground. Mist lies in the low ground about sunrise and sunset.
+- The clouds are made up: fractal noise on a steady wind; they shade the
+  ground. While the wind blows the sky redraws every frame, at a lower
+  resolution on a slow GPU (`govern` in `app.js`).
 
 ## Data and credits
 

@@ -2,10 +2,11 @@
 // the projection (proj.js), looks up the 408 MHz sky (sky.png), adds the
 // daylight and twilight (atmos.js) and the beam, and shades the ground.
 // The radio sky shows through the daylight and the clouds, as radio waves
-// pass through both.  The Landscape layer's clouds and terrain are made up:
-// clouds from fractal noise, drifting on a steady wind; hills under the
-// real skyline; a plain of bunchgrass that the wind sweeps, with firs,
-// brush and boulders; a lake that mirrors the sky, radio sky included.
+// pass through both.  The Landscape layer is part real, part made up: the
+// hills from 700 m out are the real terrain (terrain.png), with made-up
+// detail and firs; nearer, a made-up plain of bunchgrass that the wind
+// sweeps, with firs, brush and boulders, and a lake that mirrors the sky,
+// radio sky included; over it, clouds from fractal noise on a steady wind.
 //
 // The beam is drawn over the band: BAND_SAMPLES frequencies between the
 // two slider handles, evenly spaced in 1/f, each tinted by its place in
@@ -22,12 +23,30 @@ export const BAND_SAMPLES = 24;
 // Skyline texture encoding: altitude HZ_MIN .. HZ_MIN + HZ_SPAN deg in 16 bits.
 const HZ_MIN = "-10.0", HZ_SPAN = "40.0";
 
-// The made-up terrain's height maps: half-widths (m) around the observer,
-// each MAP_N texels across, with heights MAP_H[0] .. MAP_H[1] (m) in 16 bits.
-const MAPS = [40, 200, 800, 2600];
-const MAP_N = 1024, MAP_H = [-10, 250];
+// The terrain's height maps: half-widths (m) around the observer, texels
+// across, and the span of heights (m) that each holds in 16 bits.
+const MAPS = [40, 250, 1400, 8000], MAP_NS = [1024, 1024, 2048, 2048];
+const MAP_H = [[-12, 40], [-40, 120], [-80, 460], [-260, 1100]];
+// The real terrain (terrain.png; tools/make_terrain.py): half-width (m),
+// samples across, and metres per unit of R * 256 + G.
+const DEM = { half: 8000, n: 512, unit: 0.1 };
 const WATER_LEVEL = -0.8;          // the lake's surface (m)
 const glf = (x) => Number(x).toFixed(4);
+
+const SKYLINE = `
+// The terrain skyline's altitude (deg) at azimuth azDeg, linear between
+// samples.  The texture is NEAREST; the interpolation is here so the
+// 16-bit altitude is decoded before it is mixed.
+float skyline(float azDeg) {
+  float x = mod(azDeg, 360.0) / 360.0 * uHzN;
+  float i0 = floor(x), f = x - i0, i1 = mod(i0 + 1.0, uHzN);
+  vec4 a = texture2D(uHz, vec2((i0 + 0.5) / uHzN, 0.5));
+  vec4 b = texture2D(uHz, vec2((i1 + 0.5) / uHzN, 0.5));
+  float ha = (a.r * 65280.0 + a.g * 255.0) / 65535.0 * ${HZ_SPAN} + ${HZ_MIN};
+  float hb = (b.r * 65280.0 + b.g * 255.0) / 65535.0 * ${HZ_SPAN} + ${HZ_MIN};
+  return mix(ha, hb, f);
+}
+`;
 
 // Shared by the sky shader and the map builder.
 const NOISE = `
@@ -108,24 +127,54 @@ float eroded(vec2 p, float lod) {
   return s;
 }
 
-// The made-up terrain at P (m east and north of the observer), for a map of
+// The real terrain's height above the site's ground (m) at P, smoothed
+// over its 30 m samples.
+float demAt(vec2 P) {
+  vec4 t = texture2D(uDem, vec2(0.5 + P.x / ${glf(2 * DEM.half)}, 0.5 - P.y / ${glf(2 * DEM.half)}));
+  return (t.r * 65280.0 + t.g * 255.0) * ${glf(DEM.unit)};
+}
+float demSmooth(vec2 P) {
+  const float o = ${glf(DEM.half / DEM.n)};
+  return 0.25 * (demAt(P + vec2(o, o)) + demAt(P + vec2(-o, o)) + demAt(P + vec2(o, -o)) + demAt(P - vec2(o, o)));
+}
+float realH(vec2 P) { return demSmooth(P) - demSmooth(vec2(0.0)); }
+
+// The chance that a tree stands at S: stands and stragglers near by; on the
+// real hills, more on slopes that face north and higher up.
+float treesAt(vec2 S) {
+  float sw = fbm(S * 0.006 + 70.0, 0.0);
+  float p = smoothstep(0.47, 0.64, sw) * 0.5 + smoothstep(0.38, 0.47, sw) * 0.05;
+  float real = smoothstep(260.0, 700.0, length(S));
+  if (real > 0.0) {
+    float north = (demSmooth(S - vec2(0.0, 45.0)) - demSmooth(S + vec2(0.0, 45.0))) / 90.0;   // the slope down to the north
+    float up = demSmooth(S) - demSmooth(vec2(0.0));
+    p = mix(p, (0.55 * smoothstep(0.05, 0.3, north) + 0.3 * smoothstep(150.0, 600.0, up)) * (0.4 + 1.2 * sw), real);
+  }
+  return clamp(p, 0.0, 1.0);
+}
+
+// The terrain at P (m east and north of the observer), for a map of
 // uTexel metres per texel: (height above the array's ground (m); tall: 1 in
 // a tree, falling over 6 m from it, and above 0 wherever trees may stand; cover: 0 rock, 0.5 grass, 0.75
-// brush, 1 tree).  A plain of low swells; eroded hills with crags, boulders
-// and stands of fir; ground rising toward the real hills; all levelled for
+// brush, 1 tree; beyond 750 m 0.5 .. 1 is the share of trees).  Near
+// the observer it is made up: a plain of low swells; knolls with crags,
+// boulders and stands of fir.  From 260 m to 700 m out it turns into the
+// real terrain, with made-up detail and trees.  The near part is levelled for
 // the array's pad and the sight lines to the array and the lake; a hollow
 // that holds the lake, with bays, an island and reeds along the shore;
 // sagebrush in patches; and the knoll the observer stands on.
 vec3 terrainAt(vec2 P) {
   float r = length(P), px = uTexel;
   float swell = (fbm(P * 0.004 + 3.1, px * 0.004) - 0.5) * 18.0;
-  float hills = smoothstep(0.40, 0.64, fbm(P * 0.0017 + 7.3, px * 0.0017)) * smoothstep(70.0, 300.0, r);
-  float crag = hills * smoothstep(0.48, 0.66, fbm(P * 0.011 + 21.0, px * 0.011));
+  float real = smoothstep(260.0, 700.0, r);                  // the real terrain takes over
+  float hills = smoothstep(0.38, 0.62, fbm(P * 0.0017 + 7.3, px * 0.0017)) * smoothstep(70.0, 300.0, r) * (1.0 - real);
+  float crag = max(hills, real) * smoothstep(0.48, 0.66, fbm(P * 0.011 + 21.0, px * 0.011));
   float ridged = 1.0 - abs(2.0 * fbm(P * 0.03 + 9.7, px * 0.03) - 1.0);
   float outcrop = crag * smoothstep(0.78, 0.97, ridged);     // ledges along lines
-  float h = swell + hills * eroded(P * 0.0055 + 11.0, px * 0.0055) * 70.0
-          + outcrop * (2.0 + 4.0 * fbm(P * 0.3 + 2.0, px * 0.3))
-          + smoothstep(350.0, 2000.0, r) * 80.0;
+  float h = swell + hills * eroded(P * 0.0055 + 11.0, px * 0.0055) * 60.0;
+  // The real hills, with made-up gullies and bumps finer than their 30 m samples.
+  h = mix(h, realH(P) + (eroded(P * 0.004 + 31.0, px * 0.004) - 0.33) * 45.0 + (fbm(P * 0.02 + 3.0, px * 0.02) - 0.5) * 8.0, real)
+    + outcrop * (2.0 + 4.0 * fbm(P * 0.3 + 2.0, px * 0.3));
 
   vec2 q = abs(P - uArrayBox.xy) - uArrayBox.zw;
   float pad = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
@@ -181,9 +230,8 @@ vec3 terrainAt(vec2 P) {
     woody = max(woody, 0.5 * step(0.3, reed));
   }
 
-  // Firs, in stands.
-  float wn = fbm(P * 0.006 + 70.0, px * 0.006);
-  if (px < 2.0) {
+  // Firs.
+  {
     vec2 g0 = floor(P / 7.0);
     float crown = 0.0, edge = 9.0;
     for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++) {
@@ -193,23 +241,21 @@ vec3 terrainAt(vec2 P) {
       vec2 sq = abs(S - uArrayBox.xy) - uArrayBox.zw;
       float open = step(55.0, length(S)) * step(34.0, max(sq.x, sq.y)) * step(52.0, segDist(S, vec2(0.0), uArrayBox.xy))
                  * step(38.0, segDist(S, vec2(0.0), uLake.xy)) * step(2.6, length((S - uLake.xy - vec2(12.0, -5.0)) / uLake.zw));
-      if (t.r < smoothstep(0.47, 0.64, fbm(S * 0.006 + 70.0, px * 0.006)) * 0.6 * open) {
+      if (t.r < treesAt(S) * open) {
         float ht = 5.0 + 11.0 * t.a * t.a, rad = ht * (0.16 + 0.12 * fract(t.a * 7.0));
         if (px > 0.5) rad = max(rad * 1.25, 2.4);              // far off, stout enough for the map
         vec2 o = P - S;
         float d = length(o) / (0.8 + 0.4 * noise(o * 1.1 + t.gb * 40.0));       // lopsided
-        crown = max(crown, ht * pow(max(1.0 - d / rad, 0.0), 0.5 + 0.4 * fract(t.a * 13.0)));
+        crown = max(crown, ht * pow(max(1.0 - d / rad, 0.0), 0.35 + 0.55 * fract(t.a * 13.0)));
         edge = min(edge, d - rad);
       }
     }
-    h += crown * (0.8 + 0.4 * noise(P * 2.3));
-    if (px < 0.5) h += 0.5 * sin(crown * 5.0) * smoothstep(0.5, 2.0, crown);   // boughs in tiers
-    woody = max(woody, under(px, 2.0 * px + 0.3, edge));
-    tall = max(clamp(1.0 - edge / 6.0, 0.0, 1.0), 0.03 * step(0.37, wn) * step(35.0, r));
-  } else {
-    float woods = smoothstep(0.47, 0.64, wn) * 0.6 * (1.0 - level) * dry;
-    h += woods * 9.0 * (0.5 + noise(P * 0.11));
-    woody = woods;
+    if (px < 0.5) crown += 0.5 * sin(crown * 5.0) * smoothstep(0.5, 2.0, crown);   // boughs in tiers
+    if (px < 2.0 && r < 750.0) {
+      h += crown * (0.8 + 0.4 * noise(P * 2.3));
+      woody = max(woody, under(px, 2.0 * px + 0.3, edge));
+      tall = max(clamp(1.0 - edge / 6.0, 0.0, 1.0), 0.03 * step(0.001, treesAt(P) + treesAt(P + 12.0) + treesAt(P - 12.0)) * step(35.0, r));
+    } else woody = treesAt(P) * 1.6;                           // beyond 750 m the map only knows how many
   }
   return vec3(h, tall, woody > 0.0 ? 0.5 + 0.5 * woody : 0.5 - 0.5 * stone);
 }
@@ -223,12 +269,15 @@ uniform vec4 uArrayBox;
 uniform float uEyeH;
 uniform float uHalf;
 uniform float uTexel;       // metres per texel of the map being built
+uniform sampler2D uDem;     // the real terrain (DEM)
+uniform float uSize;        // texels across the map being built
+uniform vec2 uSpan;         // the heights it holds (m)
 ${NOISE}
 ${TERRAIN}
 void main() {
-  vec2 P = (gl_FragCoord.xy / ${MAP_N}.0 - 0.5) * 2.0 * uHalf;
+  vec2 P = (gl_FragCoord.xy / uSize - 0.5) * 2.0 * uHalf;
   vec3 t = terrainAt(P);
-  float v = clamp((t.x - (${glf(MAP_H[0])})) / ${glf(MAP_H[1] - MAP_H[0])}, 0.0, 1.0) * 255.0;
+  float v = clamp((t.x - uSpan.x) / (uSpan.y - uSpan.x), 0.0, 1.0) * 255.0;
   gl_FragColor = vec4(floor(v) / 255.0, fract(v), t.y, t.z);   // the two height bytes add up under the texture filter
 }
 `;
@@ -332,19 +381,7 @@ bool cameraOf(vec2 p, out vec3 c) {
   return true;
 }
 
-// The terrain skyline's altitude (deg) at azimuth azDeg, linear between
-// samples.  The texture is NEAREST; the interpolation is here so the
-// 16-bit altitude is decoded before it is mixed.
-float skyline(float azDeg) {
-  float x = mod(azDeg, 360.0) / 360.0 * uHzN;
-  float i0 = floor(x), f = x - i0, i1 = mod(i0 + 1.0, uHzN);
-  vec4 a = texture2D(uHz, vec2((i0 + 0.5) / uHzN, 0.5));
-  vec4 b = texture2D(uHz, vec2((i1 + 0.5) / uHzN, 0.5));
-  float ha = (a.r * 65280.0 + a.g * 255.0) / 65535.0 * ${HZ_SPAN} + ${HZ_MIN};
-  float hb = (b.r * 65280.0 + b.g * 255.0) / 65535.0 * ${HZ_SPAN} + ${HZ_MIN};
-  return mix(ha, hb, f);
-}
-
+${SKYLINE}
 float arrayFactor(float psi, float n) {
   float d = sin(psi);
   if (abs(d) < 1e-4) return 1.0;
@@ -486,6 +523,19 @@ vec3 litS(vec3 alb, vec3 n, float sun, float ao) {
 // The air in front of the terrain toward horizontal direction hd.
 vec3 hazeAt(vec2 hd) { return skyAt(normalize(vec3(hd, 0.03))); }
 
+// Mist lies in the low ground, thickest about sunrise and sunset, thin by
+// day.  mistTo: how much of the view from the eye to p, t away, it hides.
+float mistAmount() { return 0.2 + 0.8 * under(0.05, 0.25, abs(uSun.z)); }
+vec3 mistColour() {
+  return curve((uAmbLin * 1.1 + uSunLin * 0.3 * uSunOverHills * smoothstep(-0.02, 0.1, uSun.z) + uMoonLin * 0.5) * 0.85 + vec3(0.0012, 0.0016, 0.0026));
+}
+float mistTo(vec3 p, float t) {
+  float a = exp(-(uEyeH + 1.0) / 5.0), b = exp(-(p.z + 1.0) / 5.0);
+  float mean = abs(p.z - uEyeH) > 0.01 ? (a - b) * 5.0 / (p.z - uEyeH) : a;      // mean density along the ray
+  float patch = smoothstep(0.3, 0.7, fbm(p.xy * 0.006 - uWind * uTime * 0.004, 0.02));
+  return 1.0 - exp(-t * mean * mistAmount() * (0.2 + patch) * 0.008);
+}
+
 // The real skyline's hills, made up in detail: two nearer ridges in front
 // of the skyline, each with gullies, grass low down and fir above, hazier
 // with distance.
@@ -507,7 +557,11 @@ vec3 hillsAt(vec3 e, float alt, float hz, float pix) {
   vec3 n = normalize(vec3(-hd * 0.6 + vec2(-hd.y, hd.x) * (gully - 0.5) * 1.8, 0.8));
   vec3 c = litS(alb, n, uSunOverHills, 1.0);
   float haze = 0.30 + 0.15 * layer + 0.10 * smoothstep(0.6, 1.0, up);       // each ridge fades toward its crest
-  return mix(c, hazeAt(hd), haze);
+  c = mix(c, hazeAt(hd), haze);
+  // Wisps of cloud cling to the slopes and drift.
+  float wisp = smoothstep(0.52, 0.78, fbm(hd * 9.0 + y * vec2(70.0, 110.0) + layer * 5.0 - uWind * uTime * 0.0015, pix * 40.0));
+  wisp *= smoothstep(0.12, 0.35, up) * under(0.5, 0.85, up) * (0.25 + 0.75 * mistAmount());
+  return mix(c, mistColour(), wisp * 0.85);
 }
 
 // ---- the made-up terrain, ray-marched through its height maps
@@ -515,21 +569,28 @@ vec3 hillsAt(vec3 e, float alt, float hz, float pix) {
 const float WATER = ${WATER_LEVEL.toFixed(1)};
 const float GRASS = 0.45;                // the tallest bunchgrass (m)
 
-// The terrain's maps (built once from terrainAt; skygl.js), each 1024 x 1024
-// around the observer: (height high byte, low byte, tall, cover).
-vec4 mapTexel(vec2 P) {
+// The terrain's maps (built once from terrainAt; skygl.js) around the
+// observer, as stored: (height high byte, low byte, tall, cover).
+vec4 mapRaw(vec2 P, out vec2 span) {
   float a = max(abs(P.x), abs(P.y));
-  if (a < ${glf(MAPS[0] * 0.98)}) return texture2D(uMap0, P / ${glf(2 * MAPS[0])} + 0.5);
-  if (a < ${glf(MAPS[1] * 0.98)}) return texture2D(uMap1, P / ${glf(2 * MAPS[1])} + 0.5);
-  if (a < ${glf(MAPS[2] * 0.98)}) return texture2D(uMap2, P / ${glf(2 * MAPS[2])} + 0.5);
+  if (a < ${glf(MAPS[0] * 0.98)}) { span = vec2(${glf(MAP_H[0][0])}, ${glf(MAP_H[0][1] - MAP_H[0][0])}); return texture2D(uMap0, P / ${glf(2 * MAPS[0])} + 0.5); }
+  if (a < ${glf(MAPS[1] * 0.98)}) { span = vec2(${glf(MAP_H[1][0])}, ${glf(MAP_H[1][1] - MAP_H[1][0])}); return texture2D(uMap1, P / ${glf(2 * MAPS[1])} + 0.5); }
+  if (a < ${glf(MAPS[2] * 0.98)}) { span = vec2(${glf(MAP_H[2][0])}, ${glf(MAP_H[2][1] - MAP_H[2][0])}); return texture2D(uMap2, P / ${glf(2 * MAPS[2])} + 0.5); }
+  span = vec2(${glf(MAP_H[3][0])}, ${glf(MAP_H[3][1] - MAP_H[3][0])});
   return texture2D(uMap3, P / ${glf(2 * MAPS[3])} + 0.5);
+}
+// The same with the height (m) in r: (height, -, tall, cover).
+vec4 mapTexel(vec2 P) {
+  vec2 span;
+  vec4 m = mapRaw(P, span);
+  return vec4((m.r + m.g / 255.0) * span.y + span.x, 0.0, m.b, m.a);
 }
 // Metres per texel of the map that covers P.
 float mapEps(vec2 P) {
   float a = max(abs(P.x), abs(P.y));
-  return (a < ${glf(MAPS[0] * 0.98)} ? ${glf(MAPS[0])} : a < ${glf(MAPS[1] * 0.98)} ? ${glf(MAPS[1])} : a < ${glf(MAPS[2] * 0.98)} ? ${glf(MAPS[2])} : ${glf(MAPS[3])}) / ${glf(MAP_N / 2)};
+  return a < ${glf(MAPS[0] * 0.98)} ? ${glf(2 * MAPS[0] / MAP_NS[0])} : a < ${glf(MAPS[1] * 0.98)} ? ${glf(2 * MAPS[1] / MAP_NS[1])} : a < ${glf(MAPS[2] * 0.98)} ? ${glf(2 * MAPS[2] / MAP_NS[2])} : ${glf(2 * MAPS[3] / MAP_NS[3])};
 }
-float heightOf(vec4 m) { return (m.r + m.g / 255.0) * ${glf(MAP_H[1] - MAP_H[0])} + (${glf(MAP_H[0])}); }
+float heightOf(vec4 m) { return m.r; }
 float mapH(vec2 P) { return heightOf(mapTexel(P)); }
 
 // Distance along rd from ro to the ground or the water, or -1.  The steps
@@ -551,15 +612,15 @@ float hitGround(vec3 ro, vec3 rd, float tMax) {
       }
       return 0.5 * (a + b);
     }
-    if (climb > 0.05 && p.z > 80.0 + 80.0 * smoothstep(350.0, 2000.0, length(p.xy))) return -1.0;
+    if (max(abs(p.x), abs(p.y)) > ${glf(MAPS[3] * 0.98)} || (climb > 0.05 && p.z > 45.0 + 0.2 * length(p.xy))) return -1.0;
     tPrev = t;
     float st = max(0.045 * t + 0.08, 0.5 * d);
-    if (m.b > 0.01) st = min(st, max(5.4 * (1.0 - m.b), min(0.4 * d, 0.7)));   // not past the nearest tree
+    if (m.b > 0.01) st = min(st, max(max(5.4 * (1.0 - m.b), 0.5 * (d - 18.0)), min(0.4 * d, 0.7)));   // not past the nearest tree
     if (d < 3.0) st = min(st, 0.012 * t + 0.35);             // nor past boulders and brush, low down
     t += max(st, 0.003 * t + 0.1);
     if (t > tMax) return -1.0;
   }
-  return d < 30.0 ? t : -1.0;
+  return d < 12.0 ? t : -1.0;
 }
 
 // Sunlight reaching p past the terrain, softened (0 .. 1).
@@ -570,7 +631,7 @@ float sunPast(vec3 p) {
     vec3 q = p + uSun * t;
     float d = q.z - mapH(q.xy);
     res = min(res, 6.0 * d / t);
-    if (res < 0.0 || q.z > 170.0) break;
+    if (res < 0.0 || q.z > 45.0 + 0.2 * length(q.xy)) break;
     t += max(0.9, 0.13 * t);
   }
   return clamp(res, 0.0, 1.0) * uSunOverHills;
@@ -585,7 +646,7 @@ float cloudShade(vec2 P) {
 // Sunlight past the dishes at P on the ground (m): each dish shades a disc.
 float dishShade(vec2 P) {
   if (uSun.z < 0.03) return 1.0;
-  vec2 g = (P + uSun.xy / uSun.z * 2.6 - uArrayBox.xy) / uSpacing + 0.5 * (uCount - 1.0);
+  vec2 g = (P + uSun.xy / uSun.z * 2.4 - uArrayBox.xy) / uSpacing + 0.5 * (uCount - 1.0);
   vec2 i = clamp(floor(g + 0.5), vec2(0.0), uCount - 1.0);
   return 0.12 + 0.88 * smoothstep(2.6, 3.3, length((g - i) * uSpacing));
 }
@@ -597,8 +658,12 @@ float grassH(vec2 Q) {
 }
 
 // The cover of the ground from a map texel: rock, brush and tree, each 0..1.
-vec3 coverOf(vec4 m) {
+vec3 coverOf(vec4 m, vec2 P, float lod) {
   float woody = clamp(2.0 * m.a - 1.0, 0.0, 1.0);
+  if (length(P) >= 750.0) {                                 // far off: the share of trees, painted as dots
+    float dots = fbm(P * 0.09 + 5.0, lod * 0.09) * 0.5 + noise(P * 0.021) * 0.5;
+    return vec3(clamp(1.0 - 2.0 * m.a, 0.0, 1.0), 0.0, smoothstep(-0.06, 0.06, woody - dots));
+  }
   float tree = smoothstep(0.6, 0.85, woody);
   return vec3(clamp(1.0 - 2.0 * m.a, 0.0, 1.0), smoothstep(0.1, 0.35, woody) * (1.0 - tree), tree);
 }
@@ -606,18 +671,18 @@ vec3 coverOf(vec4 m) {
 // A cheap view of the terrain, from the maps alone (in the lake's mirror).
 vec3 terrainCheap(vec3 p) {
   vec4 m = mapTexel(p.xy);
-  vec3 cov = coverOf(m);
+  vec3 cov = coverOf(m, p.xy, 4.0);
   float s = max(1.5 * mapEps(p.xy), 1.0);
   vec3 n = normalize(vec3(mapH(p.xy - vec2(s, 0.0)) - mapH(p.xy + vec2(s, 0.0)), mapH(p.xy - vec2(0.0, s)) - mapH(p.xy + vec2(0.0, s)), 2.0 * s));
   vec3 alb = mix(vec3(0.33, 0.27, 0.15), vec3(0.30, 0.29, 0.27), max(cov.x, smoothstep(0.28, 0.5, 1.0 - n.z)));
   alb = mix(alb, vec3(0.24, 0.26, 0.19), cov.y);
-  alb = mix(alb, vec3(0.06, 0.09, 0.05), cov.z);
+  alb = mix(alb, vec3(0.04, 0.075, 0.05), cov.z);
   return litS(alb, n, uSunOverHills * cloudShade(p.xy), 1.0);
 }
 
 // What the water mirrors along r from p.
 vec3 mirrored(vec3 p, vec3 r, float pix) {
-  float t = hitGround(p + vec3(0.0, 0.0, 0.05), r, 1800.0);
+  float t = hitGround(p + vec3(0.0, 0.0, 0.05), r, 9000.0);
   if (t > 0.0) {
     vec3 q = p + r * t;
     return mix(terrainCheap(q), hazeAt(normalize(r.xy + 1e-6)), 1.0 - exp(-t / 5000.0));
@@ -661,7 +726,7 @@ vec3 groundAt(vec3 e, float t, float pix) {
     lod = t * pix / max(dot(-e, n), 0.15);
     float near = clamp(1.5 - lod * 2.5, 0.0, 1.0);           // detail fades out with distance
     float slope = 1.0 - n.z, above = h - WATER;
-    vec3 cov = coverOf(m);
+    vec3 cov = coverOf(m, P, lod);
     float woody = max(cov.y, cov.z);
     float rock = clamp(max(cov.x * 1.6, smoothstep(0.28, 0.5, slope)) * (1.0 - smoothstep(0.0, 0.2, woody)), 0.0, 1.0);
     vec2 pq = abs(P - uArrayBox.xy) - uArrayBox.zw + 2.0;
@@ -719,8 +784,11 @@ vec3 groundAt(vec3 e, float t, float pix) {
     float fine = mix(0.5, noise(Q * 31.0), clamp(1.5 - lod * 60.0, 0.0, 1.0));
     float tex = fbm(Q * 1.7 + 5.0, lod * 1.7);
     float patches = fbm(P * 0.025 + 1.0, lod * 0.025);
-    vec3 straw = mix(vec3(0.44, 0.36, 0.20), vec3(0.30, 0.21, 0.12), smoothstep(0.3, 0.7, tex));   // cured blades, pale to russet
+    vec3 straw = mix(vec3(0.52, 0.42, 0.21), vec3(0.36, 0.25, 0.12), smoothstep(0.3, 0.7, tex));   // cured blades, pale to russet
     straw = mix(straw, vec3(0.19, 0.24, 0.09), clamp(wet * 0.9 + (patches - 0.55) * 1.5, 0.0, 0.85));   // green where it is wet
+    // Sage on the slopes, far off: grey-green in mottled patches.
+    float sage = smoothstep(0.45, 0.62, fbm(P * 0.04 + 13.0, lod * 0.04)) * smoothstep(0.02, 0.10, slope) * (1.0 - near);
+    straw = mix(straw, vec3(0.25, 0.26, 0.19) * (0.7 + 0.6 * fbm(P * 0.7 + 3.0, lod * 0.7)), sage * 0.75);
     straw *= 0.75 + 0.5 * fine;
     straw = mix(straw, straw * 1.35 + vec3(0.03, 0.03, 0.02), sheen * 0.6 * smoothstep(0.3, 0.9, f));   // gusts show the pale side
     vec3 soil = mix(vec3(0.15, 0.115, 0.08), straw * 0.55, smoothstep(0.45, 0.7, noise(Q * 19.0 + 7.0)) * near);   // soil and litter
@@ -768,7 +836,7 @@ vec3 groundAt(vec3 e, float t, float pix) {
     if (cov.z > 0.0) {
       float tier = 0.5 + 0.5 * sin(p.z * 5.0 + 4.0 * noise(P * 0.9));
       float bough = fbm(P * 2.6 + p.z * 0.7, lod * 2.6);
-      vec3 fir = mix(vec3(0.03, 0.05, 0.03), vec3(0.075, 0.125, 0.06), smoothstep(0.35, 0.7, bough) * (0.5 + 0.5 * tier * near));
+      vec3 fir = mix(vec3(0.02, 0.04, 0.03), vec3(0.055, 0.105, 0.065), smoothstep(0.35, 0.7, bough) * (0.5 + 0.5 * tier * near));
       alb = mix(alb, fir, cov.z);
       ao = mix(ao, 0.5 + 0.5 * smoothstep(0.3, 0.7, bough), cov.z);
     }
@@ -778,7 +846,8 @@ vec3 groundAt(vec3 e, float t, float pix) {
     float back = pow(max(dot(hd, normalize(uSun.xy + 1e-6)), 0.0), 3.0) * max(uSun.z + 0.05, 0.0);   // light through the blades
     c += curve(uSunLin * vec3(0.30, 0.25, 0.08) * back * (0.3 + sheen) * sun * grassy * smoothstep(0.2, 0.8, f)) * 0.5;
   }
-  return mix(c, hazeAt(hd), 1.0 - exp(-t / 5000.0));
+  c = mix(c, hazeAt(hd), 1.0 - exp(-t / 5000.0));
+  return mix(c, mistColour(), mistTo(p, t));
 }
 
 void main() {
@@ -796,7 +865,7 @@ void main() {
   bool below = alt < hz;
   float tLand = -1.0;
   if (uDome > 0.5 && uGround > 0.5 && uLand > 0.5 && alt < hz + 4.0) {
-    tLand = hitGround(vec3(0.0, 0.0, uEyeH), e, 2600.0);
+    tLand = hitGround(vec3(0.0, 0.0, uEyeH), e, 11000.0);
   }
   if (uDome > 0.5 && uLand > 0.5 && (!below || uGround < 0.5) && tLand < 0.0) {
     vec3 sky = skyAt(e);
@@ -866,7 +935,7 @@ export class SkyGL {
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
-    const tex = gl.createTexture();
+    const tex = this.skyTex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);   // the values are data, not colours
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, gl.LUMINANCE, gl.UNSIGNED_BYTE, image);
@@ -905,27 +974,37 @@ export class SkyGL {
     gl.activeTexture(gl.TEXTURE0);
   }
 
-  /** Bake the made-up terrain into its height maps (MAPS), once; t: { lake, arrayBox, eyeH }. */
+  /** Bake the terrain into its height maps (MAPS), once; t: { lake, arrayBox,
+   *  eyeH, terrain: the image terrain.png }. */
   buildTerrain(t) {
     if (this.maps) return;
     const { gl } = this, { prog, u } = link(gl, MAP_FRAG), fb = gl.createFramebuffer();
     gl.useProgram(prog);
     gl.uniform1i(u.uNoise, 3);
+    const dem = gl.createTexture();                          // on unit 0 while the maps are built
+    gl.bindTexture(gl.TEXTURE_2D, dem);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, t.terrain);
+    for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR],
+      [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+    gl.uniform1i(u.uDem, 0);
     gl.uniform4fv(u.uLake, t.lake);
     gl.uniform4fv(u.uArrayBox, t.arrayBox);
     gl.uniform1f(u.uEyeH, t.eyeH);
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-    gl.viewport(0, 0, MAP_N, MAP_N);
     this.maps = MAPS.map((half, i) => {
       gl.activeTexture(gl.TEXTURE4 + i);
       const tex = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, MAP_N, MAP_N, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      const n = MAP_NS[i];
+      gl.viewport(0, 0, n, n);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, n, n, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
       for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR],
         [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
       gl.uniform1f(u.uHalf, half);
-      gl.uniform1f(u.uTexel, 2 * half / MAP_N);
+      gl.uniform1f(u.uTexel, 2 * half / n);
+      gl.uniform1f(u.uSize, n);
+      gl.uniform2f(u.uSpan, MAP_H[i][0], MAP_H[i][1]);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       return tex;
     });
@@ -933,6 +1012,8 @@ export class SkyGL {
     gl.deleteFramebuffer(fb);
     gl.deleteProgram(prog);
     gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.skyTex);
+    gl.deleteTexture(dem);
     gl.useProgram(this.prog);
   }
 

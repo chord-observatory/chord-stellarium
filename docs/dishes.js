@@ -3,8 +3,9 @@
 // the beam's declination, so they turn when the pointing does.  Drawn on a
 // 2D canvas between the sky and the overlay, far dishes first.  The
 // observer stands on a rise north-east of the array, looking south.  The
-// shape is approximate: f/D 0.21, the elevation axis 2.3 m up, three feed
-// legs.
+// shape follows photographs of the first dishes: a deep white bowl (f/D
+// 0.21, so the feed sits inside it on three short legs), a white box at its
+// back, and a low dark steel cradle.
 //
 // Light comes from the same model as the sky (atmos.js): the Sun, the Moon
 // and the skylight on each face, through the same display curve.
@@ -14,7 +15,7 @@ import { project } from "./proj.js";
 
 export const EYE_M = 10;                   // the eye above the array's ground
 export const ARRAY_AT = [-40, -80];       // the array's centre east and north of the observer (m)
-const F_OVER_D = 0.21, AXIS_M = 2.3;
+const F_OVER_D = 0.21, AXIS_M = 2.0;
 const RIM_N = 40, LEG_ANGLES = [90, 210, 330];
 
 const curve = (x, strength) => strength * Math.pow(1 - Math.exp(-Math.max(x, 0)), 1 / 2.2);
@@ -91,23 +92,33 @@ export function drawDishes(ctx, S) {
     const outline = hull(rim.concat(body, [v0]));
     const C = add(V, a, (R * R) / (4 * f)), toEye = norm(C.map((x) => -x));   // the aperture's centre
     const front = dot(a, toEye) > 0;
-    const F = add(V, a, f), feed = [scr(add(F, a, -0.15)), scr(add(F, a, 0.45))];
+    const F = add(V, a, f), feed = [scr(add(F, a, -0.25)), scr(F)];
     const m = scr(add(V, u, 1)), pxPerM = m ? Math.hypot(m[0] - v0[0], m[1] - v0[1]) : 1;
 
     // Pedestal, then legs and feed when they are behind the bowl.
     const side = norm([toEye[1], -toEye[0], 0]);
-    const ped = [add(B, side, -0.8), add(B, side, 0.8), add(V, side, 0.4), add(V, side, -0.4)].map(scr);
-    if (ped.every(Boolean)) { ctx.fillStyle = metal; poly(ctx, ped); ctx.fill(); }
+    const H = add(V, a, -0.7);                             // the back of the box
+    const ped = [add(B, side, -1.5), add(B, side, 1.5), add(H, side, 0.6), add(H, side, -0.6)].map(scr);
+    if (ped.every(Boolean)) {
+      ctx.fillStyle = metal; poly(ctx, ped); ctx.fill();
+      ctx.strokeStyle = metal; ctx.lineWidth = Math.max(0.6, 0.1 * pxPerM);   // braces out to the feet
+      for (const k of [-2.2, 2.2]) {
+        const g = scr(add(B, side, k)), top = scr(add(V, side, k * 0.45));
+        if (g && top) { ctx.beginPath(); ctx.moveTo(g[0], g[1]); ctx.lineTo(top[0], top[1]); ctx.stroke(); }
+      }
+    }
+    const box = [add(H, side, -0.75), add(H, side, 0.75), add(V, side, 0.95), add(V, side, -0.95)].map(scr);
+    if (box.every(Boolean)) { ctx.fillStyle = backLo; poly(ctx, box); ctx.fill(); }
     const legs = () => {
       ctx.strokeStyle = metal;
-      ctx.lineWidth = Math.max(0.6, 0.08 * pxPerM);
+      ctx.lineWidth = Math.max(0.5, 0.05 * pxPerM);
       for (const phi of LEG_ANGLES) {
-        const r0 = scr(surf(V, R * 0.98, phi)), mid = scr(add(surf(V, R * 0.6, phi), a, 0.4));
-        if (!r0 || !mid || !feed[1]) continue;
-        ctx.beginPath(); ctx.moveTo(r0[0], r0[1]); ctx.lineTo(mid[0], mid[1]); ctx.lineTo(feed[1][0], feed[1][1]); ctx.stroke();
+        const r0 = scr(surf(V, R * 0.3, phi));
+        if (!r0 || !feed[0]) continue;
+        ctx.beginPath(); ctx.moveTo(r0[0], r0[1]); ctx.lineTo(feed[0][0], feed[0][1]); ctx.stroke();
       }
       if (feed[0] && feed[1]) {
-        ctx.lineWidth = Math.max(1, 0.4 * pxPerM);
+        ctx.lineWidth = Math.max(1, 0.3 * pxPerM);
         ctx.beginPath(); ctx.moveTo(feed[0][0], feed[0][1]); ctx.lineTo(feed[1][0], feed[1][1]); ctx.stroke();
       }
     };
@@ -133,11 +144,6 @@ export function drawDishes(ctx, S) {
     ctx.strokeStyle = edge;
     ctx.lineWidth = 1;
     ctx.stroke();
-    if (!front) {                                          // the mount's plate on the back, in shadow
-      const hub = [];
-      for (let k = 0; k < 16; k++) { const q = scr(surf(V, R * 0.22, k * 22.5)); if (q) hub.push(q); }
-      if (hub.length === 16) { ctx.fillStyle = metal; poly(ctx, hub); ctx.fill(); }
-    }
 
     if (front) {
       ctx.fillStyle = inner;
