@@ -201,8 +201,9 @@ export class Overlay {
   horizon() {
     const S = this.S, F = S.ob.fromEnu, en = (az, alt) => apply(F, enuFromAltaz(az, alt));
     const sky = range(0, 360, 0.5).map((az) => en(az, S.skyline(az)));
-    if (S.dome) this.line(sky, "rgba(150,220,175,0.12)", 5);
-    this.line(sky, COLORS.horizon, 1.3);
+    const scenery = S.dome && S.layers.land;                 // the made-up landscape draws its own skyline
+    if (S.dome && !scenery) this.line(sky, "rgba(150,220,175,0.12)", 5);
+    if (!scenery) this.line(sky, COLORS.horizon, 1.3);
     const below = S.dome ? -3.2 : 2;
     const points = [[0, "N"], [45, "NE"], [90, "E"], [135, "SE"], [180, "S"], [225, "SW"], [270, "W"], [315, "NW"]];
     for (const [az, t] of points) {
@@ -212,7 +213,7 @@ export class Overlay {
         color: major ? COLORS.horizon : "rgba(150,220,175,0.6)", font: major ? "600 14px var(--font)" : "600 11px var(--font)",
       }), 20, true);
     }
-    if (S.ground) {
+    if (S.ground && !scenery) {
       const c = this.ctx;
       c.strokeStyle = "rgba(150,220,175,0.45)"; c.lineWidth = 1;
       for (const az of range(0, 355, 5)) {

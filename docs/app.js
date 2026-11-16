@@ -5,6 +5,8 @@ import { makeCamera, fitScale, unproject, toPlane, STEREO, MOLL, CAR } from "./p
 import { SkyGL } from "./skygl.js";
 import { Overlay, drawPulsarBlink, setFont, COLORS } from "./overlay.js";
 import { Trace } from "./trace.js";
+import { skyModel } from "./atmos.js";
+import { drawDishes, EYE_M, ARRAY_AT } from "./dishes.js";
 
 const $ = (id) => document.getElementById(id);
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
@@ -24,6 +26,9 @@ const LAYERS = [
   ["strip", "Drift strip", true, "#ffffff"],
   ["trace", "Drift trace", true, "rgb(255,205,120)"],
   ["horizon", "Horizon", true, "rgb(150,220,175)"],
+  ["dishes", "Dishes", true, "#d9dee8"],
+  ["clouds", "Clouds (made up)", false, "#e9eef7"],
+  ["land", "Landscape (made up)", false, "#c8b27a"],
   ["ecliptic", "Ecliptic", true, "rgb(240,205,110)"],
   ["grid_eq", "RA / Dec grid", false, "rgb(150,175,225)"],
   ["grid_gal", "Galactic grid", false, "rgb(225,165,125)"],
@@ -38,6 +43,10 @@ const PANEL_W = 336, TRACE_H = 120;
 const AIM = { ground: { az0: 180, alt0: null }, dome: { az0: 180, alt0: 90 } };
 const GROUND_FOV = 100;                  // degrees across the free area at the ground view's start
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const WIND = [0.92, 0.38];               // the made-up wind blows toward east-northeast (unit vector)
+const LAKE = [35, -55, 32, 24];          // the made-up lake: centre east, north and radii (m) from the eye
+const MOON_LIGHT = [0.13, 0.145, 0.165]; // full moonlight on a white surface, exposed linear (bright enough to see by)
+const ANIM_MS = 33;                      // frame interval while the wind blows
 
 const st = {
   live: true, t: Date.now(), playing: true, speed: 1,
@@ -48,8 +57,9 @@ const st = {
   selected: null,
 };
 
-let site, cat, skyMeta, horizon, gl, overlay, trace, data, cam, frame, dpr = 1;
-let dirty = true, lastDraw = 0, lastPanels = 0, lastHash = 0, hits = [], blink = [];
+let site, cat, skyMeta, horizon, gl, overlay, trace, data, cam, frame, glParams, dpr = 1;
+let glScale = 1, frameMs = 16, scaleAt = 0;   // the sky canvas's resolution while the wind blows (see govern)
+let dirty = true, lastDraw = 0, lastWind = 0, lastPanels = 0, lastHash = 0, hits = [], blink = [];
 const nameIndex = new Map();             // search names -> objects
 
 // ---------------------------------------------------------------- loading
@@ -208,8 +218,9 @@ function setTime(ms, { live = false, play } = {}) {
 function resize() {
   dpr = Math.min(window.devicePixelRatio || 1, 2);
   const w = window.innerWidth, h = window.innerHeight;
-  for (const id of ["sky", "ov", "fx"]) { const c = $(id); c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+  for (const id of ["fg", "ov", "fx"]) { const c = $(id); c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
   st.view.w = w; st.view.h = h;
+  sizeSky();
   insets();
 }
 
@@ -232,7 +243,23 @@ function computeFrame() {
   const boreJ2000 = A.apply(ob.fromEnu, boreEnu);
   const sunAlt = A.altaz(sun.enu)[1];
   const planets = A.planets(ob).map((p) => ({ ...p, obj: { type: "planet", name: p.name, v: p.j2000, au: p.au } }));
-  return { ob, sun, moon, phase, planets, decBore, boreEnu, boreJ2000, sunAlt, day: smooth(-12, 4, sunAlt) };
+  const day = smooth(-12, 4, sunAlt), moonUp = smooth(-2, 6, A.altaz(moon.enu)[1]);
+  const moonLin = MOON_LIGHT.map((x) => x * phase.illuminated * moonUp * (1 - day));
+  const sunOverHills = smooth(-0.4, 0.4, sunAlt - skyline(A.altaz(sun.enu)[0]));
+  return { ob, sun, moon, phase, planets, decBore, boreEnu, boreJ2000, sunAlt, day, sky: skyFor(sunAlt), moonLin, sunOverHills };
+}
+
+// The daylight sky for each Sun altitude, to 0.2 deg (atmos.js takes tens of ms).
+const skyCache = new Map();
+function skyFor(sunAlt) {
+  const k = Math.round(sunAlt * 5) / 5;
+  let m = skyCache.get(k);
+  if (!m) {
+    m = skyModel(k);
+    if (skyCache.size >= 300) skyCache.delete(skyCache.keys().next().value);
+    skyCache.set(k, m);
+  }
+  return m;
 }
 
 let monthsCache = { year: null, list: [] };
@@ -246,10 +273,12 @@ function sunMonths(ms) {
 }
 
 /** The span of altitude the ground view starts on: from just below the
- *  southern skyline to above the beam (63 deg up for Tau A, 81 for Cyg A). */
+ *  southern skyline, or below the dishes, to above the beam (63 deg up for
+ *  Tau A, 81 for Cyg A). */
 function groundSpan() {
   const beamAlt = 90 - Math.abs(site.site.lat - pointingDec(A.observer(st.t, site.site)));
-  return [skyline(180) - 4, Math.min(beamAlt + 8, 95)];
+  const lo = st.layers.dishes || st.layers.land ? -15 : skyline(180) - 4;
+  return [lo, Math.min(beamAlt + 8, 95)];
 }
 
 /** Start of a camera view; the ground view is centred on groundSpan(). */
@@ -276,11 +305,24 @@ function render() {
   if (v.zoom == null) v.zoom = defaultZoom(v.kind);
   cam = makeCamera(v, frame.ob);
   const zoom = cam.s / 180;            // detail level: pixels per radian against a desktop's full view
-  gl.draw({
-    cam, ob: frame.ob, dpr, stretch: SKY_STRETCH, skyGain: st.skyGain, day: frame.day,
+  glParams = {
+    cam, ob: frame.ob, dpr: dpr * glScale, stretch: SKY_STRETCH, skyGain: st.skyGain,
     dome: onSite, ground: st.layers.horizon, bore: frame.boreEnu,
     beamMode: { off: 0, dish: 1, array: 2 }[st.beamMode], beamGain: 1, band: st.band, array: site.array,
-  });
+    sun: frame.sun.enu, moon: frame.moon.enu, moonLin: frame.moonLin,
+    clouds: st.layers.clouds, land: st.layers.land, time: windTime(), wind: WIND, eyeH: EYE_M, lake: LAKE,
+    arrayBox: arrayBox(), sunOverHills: frame.sunOverHills,
+  };
+  gl.setSky(frame.sky);
+  gl.draw(glParams);
+  const fg = $("fg").getContext("2d");
+  if (onSite && st.layers.dishes) {
+    drawDishes(fg, {
+      cam, dpr, ob: frame.ob, array: site.array, bore: frame.boreEnu,
+      light: { sun: frame.sun.enu, moon: frame.moon.enu, sunLin: frame.sky.sunLin.map((x) => x * frame.sunOverHills),
+        ambLin: frame.sky.ambLin, moonLin: frame.moonLin, strength: frame.sky.strength },
+    });
+  } else fg.clearRect(0, 0, $("fg").width, $("fg").height);
   const centre = unproject(cam, v.w / 2, v.h / 2);
   const res = overlay.draw({
     cam, dpr, ob: frame.ob, zoom, layers: { ...st.layers, beam: st.beamMode !== "off" }, data, skyline,
@@ -315,6 +357,36 @@ function drawTrace() {
   trace.draw({ dpr, x0: st.view.insetL, w: st.view.w - st.view.insetL, h: TRACE_H, now: st.t, clock: hhmm, marks });
 }
 
+/** The array's pad with a margin: centre east, north and half-sizes (m) from the observer. */
+function arrayBox() {
+  const a = site.array, r = a.dish_diameter_m / 2 + 3;
+  return [ARRAY_AT[0], ARRAY_AT[1], ((a.nx - 1) / 2) * a.dx_m + r, ((a.ny - 1) / 2) * a.dy_m + r];
+}
+
+function sizeSky() {
+  const c = $("sky"), s = dpr * glScale;
+  c.width = Math.round(st.view.w * s);
+  c.height = Math.round(st.view.h * s);
+  dirty = true;
+}
+
+/** While the wind blows the sky redraws every frame; on a slow GPU, draw it
+ *  at a lower resolution (down to half) to keep the motion smooth. */
+function govern(dt, now) {
+  frameMs += (Math.min(dt, 250) - frameMs) * 0.1;
+  if (now - scaleAt < 1500) return false;
+  const next = frameMs > 45 ? Math.max(0.5, glScale * 0.8) : frameMs < 24 ? Math.min(1, glScale / 0.8) : glScale;
+  if (next === glScale) return false;
+  glScale = next;
+  scaleAt = now;
+  sizeSky();
+  return true;
+}
+
+/** Seconds of wind (wall clock, not the page's clock; wraps daily). */
+const windTime = () => (performance.now() / 1000) % 86400;
+const windBlows = () => (st.layers.clouds || st.layers.land) && st.view.kind !== "chart" && !reducedMotion;
+
 function loop(now) {
   requestAnimationFrame(loop);
   const dt = now - (loop.prev ?? now);
@@ -333,7 +405,13 @@ function loop(now) {
     render();
     if (now - lastPanels > (st.playing && Math.abs(st.speed) > 1 ? 250 : 900)) { lastPanels = now; panels(); }
     if (now - lastHash > 700) { lastHash = now; writeHash(); }
+  } else if (glParams && windBlows() && now - lastWind > ANIM_MS) {
+    const resized = govern(now - lastWind, now);
+    lastWind = now;
+    glParams.time = windTime();
+    if (!resized) gl.draw(glParams);                         // else the next frame renders afresh
   }
+  if (!windBlows() && glScale !== 1) { glScale = 1; sizeSky(); }
   if (st.layers.pulsars && blink.length) drawPulsarBlink($("fx").getContext("2d"), blink, now / 1000, dpr, st.view.w, st.view.h, reducedMotion);
   else if (loop.blinked) $("fx").getContext("2d").clearRect(0, 0, $("fx").width, $("fx").height);
   loop.blinked = st.layers.pulsars && blink.length > 0;
@@ -845,10 +923,10 @@ function writeHash() {
 // ---------------------------------------------------------------- explain and credits
 
 const STEPS = [
-  ["The sky above the dishes", "You are standing at the CHORD pathfinder at the Dominion Radio Astrophysical Observatory, near Penticton, BC. Drag to look in any direction; scroll to zoom. The hills are the real skyline around the site. The colours show the radio sky at 408 MHz. The bright band is the Milky Way, where most of the radio emission comes from."],
+  ["The sky above the dishes", "You are standing on a rise behind the CHORD pathfinder at the Dominion Radio Astrophysical Observatory, near Penticton, BC. Drag to look in any direction; scroll to zoom. The dishes look where you look; they tilt when the pointing changes. The hills are the real skyline around the site. The colours show the radio sky at 408 MHz. The bright band is the Milky Way, where most of the radio emission comes from."],
   ["The beam", "The 64 dishes do not move. They all point at one declination on the meridian, the line from north to south through the zenith. The rings show where the beam has half its peak sensitivity, at the two ends of the chosen band. Low frequencies (red) see a wider patch of sky than high frequencies (violet)."],
   ["A drift scan", "The Earth turns, and the sky drifts through the beam once a day. The dashed lines show the strip of sky that passes through the beam. The dots along it show where the beam will point in the hours ahead, in local time."],
-  ["Radio sees in daylight", "In the ground and dome views the stars fade during the day, but the radio sky does not: radio waves pass through the daylit atmosphere. The Sun is still a very bright radio source, so the panel tells you when it crosses the strip."],
+  ["Radio sees in daylight", "In the ground and dome views the stars fade during the day, but the radio sky does not: radio waves pass through the daylit atmosphere, and through clouds too (turn on the made-up Clouds layer to see). The Sun is still a very bright radio source, so the panel tells you when it crosses the strip."],
   ["Frequency is distance", "Hydrogen gas emits at 1420 MHz. The expansion of the universe stretches that line to lower frequencies, so each frequency in the band sees hydrogen at one distance and one time in the past. The band panel shows the redshift and the lookback time."],
   ["The array beam", "Set the beam to Array to see the 8 × 8 grid of dishes added together. The narrow peaks repeat across the sky (grating lobes) because the dishes are evenly spaced. Over a wide band each lobe spreads into a small rainbow, because each frequency puts it at a different place."],
   ["Explore", "Select any object for its details, or search for it by name. Pulsars flash at their own period; the fastest show as a steady glow. Use the time controls to watch a day go by, or select a baseband dump to see where the dishes pointed when it was taken."],
@@ -880,6 +958,7 @@ function credits() {
     "Planets: E. M. Standish, Keplerian Elements for Approximate Positions of the Major Planets (JPL), valid 1800–2050; within 2′ of astropy, Jupiter and Saturn within 10′.",
     "The drift trace's Sun is a quiet Sun of about 25 sfu at 400 MHz, rising as f^0.8, seen through the main lobe only. The active Sun is a few times brighter, and bursts far more.",
     "Cosmology: flat ΛCDM with H₀ = 67.66 km/s/Mpc and Ωm = 0.3111 (Planck 2018).",
+    "Daylight and twilight: single scattering by air and aerosol, with ozone absorption, in a spherical atmosphere, plus an estimate of the higher orders; coefficients from E. Bruneton, A Qualitative and Quantitative Evaluation of 8 Clear Sky Models (2017). The Clouds and Landscape layers are made up; the dishes' shape is approximate.",
     "The beam is a model: a Gaussian main lobe for each dish, times the array factor of an ideal 8 × 8 grid. The real beam has sidelobes and errors not shown here.",
     `Catalogue built ${cat.generated}.`,
   ];

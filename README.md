@@ -23,7 +23,9 @@ choice (Tau A, Cyg A or a declination), not read from the dishes.
 | `docs/app.js` | State, controls, panels, URL fragment | by hand |
 | `docs/astro.js` | Time, frames, Sun, Moon, planets, cosmology (no DOM) | by hand; run the test |
 | `docs/proj.js` | Projections: stereographic camera, Mollweide, plate carrée | by hand |
-| `docs/skygl.js` | WebGL: the radio sky, ground, daylight, the band-drawn beam | by hand |
+| `docs/skygl.js` | WebGL: the radio sky, daylight, the band-drawn beam, the ground; the made-up clouds and terrain | by hand |
+| `docs/atmos.js` | The daylight and twilight sky (scattering model) and its light, tabulated per Sun altitude | by hand |
+| `docs/dishes.js` | The 64 dishes, tilted to the pointing, on a 2D canvas | by hand |
 | `docs/overlay.js` | Lines, markers, labels, pulsar blinking | by hand |
 | `docs/trace.js` | The drift-trace model under the sky | by hand |
 | `docs/site.json` | Site, array, pointings, calibrators, baseband dumps | **by hand** |
@@ -115,6 +117,19 @@ PUPPETEER_CACHE_DIR=$D/cache node shots.mjs http://127.0.0.1:8765/ $D/shots 1400
 - The drift trace scales the 408 MHz map as f^-2.55, averages it over the
   dish beam and adds a quiet Sun: a model of one dish's total power, not
   a measurement.
+- In the ground and dome views the daylight is a model of the clear sky
+  for the Sun's true altitude, added over the radio sky (radio waves pass
+  through it). The light on the ground, the dishes and the clouds comes
+  from the same model, and the Sun goes behind the real skyline.
+- The Clouds and Landscape layers are made up, and off by default. The
+  clouds are fractal noise on a steady wind. The landscape is a terrain
+  function (`terrainAt` in `skygl.js`) baked once into three height maps
+  and ray-marched per pixel: knolls, rocks, sagebrush, flowers and grass
+  in the wind, and a lake whose shore is where the terrain meets the
+  water. It is levelled where the dishes stand and along the sight lines
+  to them and to the lake, so the 2D-drawn dishes are never hidden. While
+  the wind blows the sky redraws every frame, at a lower resolution on a
+  slow GPU (`govern` in `app.js`).
 
 ## Data and credits
 

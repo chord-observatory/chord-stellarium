@@ -39,7 +39,7 @@
     * { box-sizing: border-box; }
     html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--ink); font: 13px/1.4 var(--font); }
     canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
-    #ov, #fx { pointer-events: none; }
+    #fg, #ov, #fx { pointer-events: none; }
     #trace { top: auto; bottom: 0; height: 120px; width: auto; pointer-events: none; background: linear-gradient(180deg, rgba(4,7,15,0), rgba(4,7,15,0.82) 22%); }
     #sky { cursor: grab; touch-action: none; }
     #sky.dragging { cursor: grabbing; }
@@ -94,7 +94,7 @@
     .facts dd { margin: 0; font-variant-numeric: tabular-nums; }
 
     .layers { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; }
-    .layers label { display: flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; font-size: 12.5px; }
+    .layers label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12.5px; line-height: 1.25; }
     .layers input { accent-color: var(--accent); margin: 0; }
     .sw { display: inline-block; width: 9px; height: 9px; flex: none; }
     .fade { display: flex; align-items: center; gap: 8px; margin-top: 6px; color: var(--muted); font-size: 12px; }
@@ -154,6 +154,7 @@
 </head>
 <body>
   <canvas id="sky" aria-label="The sky above the CHORD pathfinder"></canvas>
+  <canvas id="fg"></canvas>
   <canvas id="ov"></canvas>
   <canvas id="fx"></canvas>
   <canvas id="trace" aria-label="Model of the sky brightness in the beam over the next day"></canvas>
