@@ -27,7 +27,7 @@ choice (Tau A, Cyg A or a declination), not read from the dishes.
 | `docs/overlay.js` | Lines, markers, labels, pulsar blinking | by hand |
 | `docs/trace.js` | The drift-trace model under the sky | by hand |
 | `docs/site.json` | Site, array, pointings, calibrators, baseband dumps | **by hand** |
-| `docs/catalog.json` | 3CRR, ATNF pulsars, stars, constellations | `tools/build_catalog.py` |
+| `docs/catalog.json` | 3CRR, bright NVSS sources, Galactic SNRs, ATNF pulsars, stars, constellations | `tools/build_catalog.py` |
 | `docs/sky.png`, `docs/sky.json` | 408 MHz sky, 2048 × 1024, ICRS plate carrée | `tools/make_sky.py` |
 | `docs/horizon.json` | Terrain skyline every 0.5° of azimuth (optional: flat without it) | `tools/make_horizon.py` |
 | `tools/` | The builders above, and the tests | |
@@ -50,8 +50,24 @@ To look at a change before pushing, serve `docs/` locally
 
 ## Tools
 
-- `tools/build_catalog.py`: downloads 3CRR, psrcat and d3-celestial and
-  writes `docs/catalog.json`. Stdlib only.
+- `tools/build_catalog.py`: downloads 3CRR, psrcat, d3-celestial, NVSS,
+  TGSS ADR1, 3CR/3C and Green's SNR catalogue and writes
+  `docs/catalog.json`. Stdlib only. The radio sources in three layers:
+  - **3CRR** (173): complete above 10.9 Jy at 178 MHz, but only north of
+    +10° and off the Galactic plane.
+  - **NVSS** (555): NVSS components within 4′ grouped into one source,
+    with a spectral index from TGSS (150 MHz) summed over the group, kept
+    when brighter than 5 Jy at 400 MHz, north of −40°. Named after 3CRR,
+    else after 3CR/3C when the position (within twice its error, at most
+    15′) and the flux (within ×3) agree, else NVSS J. Without a TGSS
+    match (59, many of them HII regions with flat spectra) the index is
+    unknown and the page shows the 1.4 GHz flux, not an extrapolation.
+    TGSS's flux scale is off by tens of percent in some fields (3C 286
+    reads 17 Jy at 150 MHz, about 30 % low).
+  - **Supernova remnants** (310, Green 2024 October): drawn at their
+    size; their 1 GHz flux and index give the flux in the band.
+  The page scales each source's flux to the band's centre with its index.
+  VizieR's servers come and go: the script tries CDS, then CfA.
 - `tools/make_sky.py` / `tools/unpack_sky.py`: resample the Haslam map
   into `docs/sky.png` and `docs/sky.json`. `make_sky.py` needs numpy,
   astropy, Pillow and `choco.healpix`, so it runs in choco's venv on the

@@ -13,7 +13,10 @@ const fmt = (x, d = 1) => (x == null ? "–" : (Math.abs(x) < 0.5 * 10 ** -d ? 0
 const LAYERS = [
   ["stars", "Stars", true, "#e8ecff"],
   ["constellations", "Constellations", true, "rgba(150,170,215,0.7)"],
-  ["sources", "Radio sources", true, "#ffb46e"],
+  ["calib", "Calibrators", true, "#ffd479"],
+  ["sources", "3CRR sources", true, "#ffb46e"],
+  ["nvss", "NVSS sources", true, "#b9a7ff"],
+  ["snrs", "Supernova remnants", true, "#b6e58a"],
   ["pulsars", "Pulsars", true, "#7fdfff"],
   ["dumps", "Baseband dumps", true, "#ff86d8"],
   ["sunmoon", "Sun and Moon", true, "#ffe08a"],
@@ -79,6 +82,25 @@ function buildData() {
     const o = { type: "3crr", name: s.name, ra: s.ra, dec: s.dec, s178: s.s178_jy, z: s.z, alpha: s.alpha, fr: s.fr, v: A.vec(s.ra, s.dec) };
     return { ...o, obj: o };
   });
+  const snrs = rows(cat.snrs).map((s) => {
+    const others = s.other ? s.other.split(",").map((x) => x.trim()).filter(Boolean) : [];
+    const v = A.vec(s.ra, s.dec);
+    const o = { type: "snr", name: others[0] || s.name, gname: s.name, others, ra: s.ra, dec: s.dec,
+      size: [s.size_a_arcmin, s.size_b_arcmin], kind: s.type, s1000: s.s1000_jy, alpha: s.alpha, v,
+      atCalibrator: calibrators.some((c) => A.sepDeg(c.v, v) < 0.2) };   // Cas A, the Crab: the calibrator's label covers it
+    return { ...o, obj: o };
+  });
+  // A compact remnant (10' or less) is the NVSS source on it: with both
+  // layers on, the remnant is drawn.  A large one is not: NVSS resolves it
+  // out, and what it lists there (W51 in W51C) is something else.
+  const compactSnrs = snrs.filter((s) => Math.sqrt(s.size[0] * s.size[1]) <= 10);
+  const nvss = rows(cat.sources_nvss).map((s) => {
+    const v = A.vec(s.ra, s.dec);
+    const snr = compactSnrs.find((r) => A.sepDeg(r.v, v) * 60 <= Math.sqrt(r.size[0] * r.size[1]) / 2 + 1);
+    const o = { type: "nvss", name: s.name, nvssName: s.nvss, threec: s.threec, ra: s.ra, dec: s.dec, s1400: s.s1400_jy,
+      s150: s.s150_jy, alpha: s.alpha, components: s.components, crr: s.crr, inSnr: snr ? snr.name : "", v };
+    return { ...o, obj: o };
+  });
   const pulsars = rows(cat.pulsars).map((p) => {
     // Flux at 400 MHz, or the 1400 MHz flux scaled with a spectral index of -1.6.
     const flux = p.s400_mjy ?? p.s1400_mjy * (1400 / 400) ** 1.6;
@@ -111,7 +133,18 @@ function buildData() {
     const o = { type: "dump", name: d.name, ms, note: d.note, ra, dec: dd, v };
     return { ...o, label: `dump ${d.utc.slice(5, 10)} ${d.utc.slice(11, 16)}Z`, obj: o };
   });
-  return { calibrators, sources3c, pulsars, stars, conLines, conNames, dumps };
+  return { calibrators, sources3c, nvss, snrs, pulsars, stars, conLines, conNames, dumps };
+}
+
+/** Flux density (Jy) of a catalogue source at f MHz, from its catalogue
+ *  flux and spectral index.  Without an index the catalogue's own flux
+ *  stands, not extrapolated (the NVSS sources TGSS missed, many of them
+ *  HII regions with flat spectra; Green's SNRs without an index). */
+function fluxAt(o, f) {
+  if (o.type === "3crr") return o.s178 != null ? o.s178 * (f / 178) ** -(o.alpha ?? 0.8) : null;   // 3CRR: S ~ f^-alpha
+  if (o.type === "nvss") return o.alpha != null ? o.s1400 * (f / 1400) ** o.alpha : o.s1400;
+  if (o.type === "snr") return o.s1000 == null ? null : o.alpha != null ? o.s1000 * (f / 1000) ** o.alpha : o.s1000;
+  return null;
 }
 
 function starRGB(bv) {
@@ -253,7 +286,7 @@ function render() {
     cam, dpr, ob: frame.ob, zoom, layers: { ...st.layers, beam: st.beamMode !== "off" }, data, skyline,
     dome: onSite, ground: v.kind === "ground", day: frame.day, sun: frame.sun, moon: frame.moon, phase: frame.phase,
     sunObj: { type: "sun", name: "Sun", v: frame.sun.j2000 }, moonObj: { type: "moon", name: "Moon", v: frame.moon.j2000 },
-    planets: frame.planets,
+    planets: frame.planets, flux: (o) => fluxAt(o, fCentre()),
     decBore: frame.decBore, boreJ2000: frame.boreJ2000, band: st.band, array: site.array,
     sunMonths: sunMonths(st.t), clock: hhmm, selected: st.selected,
     lon0Label: centre ? A.lonlat(centre)[0] : 0,
@@ -272,8 +305,11 @@ function drawTrace() {
     const dt = A.msToTransit(ob, v);
     for (const t of [dt - day, dt]) marks.push({ ms: st.t + t, label, color, prio });
   };
-  for (const c of data.calibrators) mark(c.v, c.name, COLORS.calibrator, 100);
-  for (const s of data.sources3c) if (s.s178 >= 30) mark(s.v, s.name, "rgb(255,190,130)", s.s178);
+  const fc = fCentre(), L = st.layers;
+  if (L.calib) for (const c of data.calibrators) mark(c.v, c.name, COLORS.calibrator, 100);
+  if (L.sources) for (const s of data.sources3c) if (fluxAt(s, fc) >= 20) mark(s.v, s.name, "rgb(255,190,130)", fluxAt(s, fc));
+  if (L.nvss) for (const s of data.nvss) if (!(L.sources && s.crr) && !(L.snrs && s.inSnr) && fluxAt(s, fc) >= 20) mark(s.v, s.name, "rgb(185,167,255)", fluxAt(s, fc));
+  if (L.snrs) for (const s of data.snrs) if (!s.atCalibrator && fluxAt(s, fc) >= 50) mark(s.v, s.name, "rgb(182,229,138)", fluxAt(s, fc));
   for (const p of data.pulsars) if (p.highlight) mark(p.v, p.name, COLORS.pulsar, 50);
   mark(frame.sun.j2000, "Sun", COLORS.sun, 200);
   trace.draw({ dpr, x0: st.view.insetL, w: st.view.w - st.view.insetL, h: TRACE_H, now: st.t, clock: hhmm, marks });
@@ -343,16 +379,21 @@ function bandFacts() {
 
 function tagFor(o) {
   return { calibrator: ["cal", "t-cal"], "3crr": ["3C", "t-src"], pulsar: ["PSR", "t-psr"], dump: ["dump", "t-dump"],
-    planet: ["planet", "t-planet"],
+    planet: ["planet", "t-planet"], nvss: ["NVSS", "t-nvss"], snr: ["SNR", "t-snr"],
     sun: ["Sun", "t-sun"], moon: ["Moon", "t-moon"], star: ["star", "t-star"] }[o.type];
 }
 const tagHtml = (o) => { const [t, c] = tagFor(o); return `<span class="tag ${c}">${t}</span>`; };
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 
+/** What the in-beam and coming-up lists consider: the catalogues whose
+ *  layers are on (an NVSS source that is also a 3CRR one counts once). */
 function candidates() {
+  const L = st.layers;
   return [
-    ...data.calibrators.map((c) => c.obj),
-    ...data.sources3c.map((s) => s.obj),
+    ...(L.calib ? data.calibrators.map((c) => c.obj) : []),
+    ...(L.sources ? data.sources3c.map((s) => s.obj) : []),
+    ...(L.nvss ? data.nvss.filter((s) => !(L.sources && s.crr) && !(L.snrs && s.inSnr)).map((s) => s.obj) : []),
+    ...(L.snrs ? data.snrs.filter((s) => !s.atCalibrator).map((s) => s.obj) : []),
     ...data.pulsars.filter((p) => p.highlight || p.flux >= 20).map((p) => p.obj),
     { type: "sun", name: "Sun", v: frame.sun.j2000 },
     { type: "moon", name: "Moon", v: frame.moon.j2000 },
@@ -390,7 +431,8 @@ function upNext() {
   for (const o of candidates()) {
     const d = A.decOfDate(ob, o.v) - frame.decBore;
     if (Math.abs(d) > half) continue;
-    if (o.type === "3crr" && o.s178 < 15) continue;
+    const s = fluxAt(o, fCentre());
+    if (s != null && s < 10) continue;                       // the bright ones only
     const dt = A.msToTransit(ob, o.v);
     if (dt < 60000) continue;
     items.push({ o, dt, v: hhmm(st.t + dt), d: `${inWords(dt)} · ${fmt(Math.abs(d), 1)}° ${d >= 0 ? "N" : "S"} of centre` });
@@ -459,12 +501,32 @@ function card(o) {
   const rows = [];
   let kind = "", note = "";
   if (o.type === "calibrator") { kind = `Calibrator · ${o.kind}${o.alias ? ` · ${o.alias}` : ""}`; }
+  // Spectral indices are shown one way for every catalogue: S ~ f^alpha.
+  const atBand = (s, note = "") => rows.push([`Flux, ${Math.round(fc)} MHz`, s == null ? "–" : `${fmt(s, s < 10 ? 2 : 1)} Jy${note}`]);
   if (o.type === "3crr") {
     kind = "Radio source · 3CRR";
     rows.push(["Flux, 178 MHz", `${fmt(o.s178, 1)} Jy`]);
-    if (o.alpha != null) rows.push(["Spectral index", fmt(o.alpha, 2)]);
+    if (o.alpha != null) rows.push(["Spectral index", `${fmt(-o.alpha, 2)} (178–750 MHz)`]);
+    atBand(fluxAt(o, fc), o.alpha == null ? " (index −0.8 assumed)" : "");
     if (o.z != null) rows.push(["Redshift", fmt(o.z, 3)]);
     rows.push(["Class", { 1: "FR I", 2: "FR II" }[o.fr] ?? "compact"]);
+  }
+  if (o.type === "nvss") {
+    const also = [o.crr || o.threec, o.nvssName].filter((n) => n && n !== o.name);
+    kind = `Radio source · NVSS${o.components > 1 ? `, ${o.components} components` : ""}${also.length ? ` · ${also.join(" · ")}` : ""}`;
+    if (o.inSnr) rows.push(["In", `the supernova remnant ${esc(o.inSnr)}`]);
+    rows.push(["Flux, 1.4 GHz", `${fmt(o.s1400, 2)} Jy`]);
+    rows.push(["Flux, 150 MHz", o.s150 != null ? `${fmt(o.s150, 2)} Jy (TGSS)` : "no TGSS match"]);
+    rows.push(["Spectral index", o.alpha != null ? `${fmt(o.alpha, 2)} (150 MHz–1.4 GHz)` : "unknown"]);
+    atBand(fluxAt(o, fc), o.alpha == null ? " (the 1.4 GHz flux: not extrapolated)" : "");
+  }
+  if (o.type === "snr") {
+    kind = `Supernova remnant · ${o.gname}${o.kind ? ` · type ${o.kind}` : ""}`;
+    if (o.others.length > 1) rows.push(["Also", esc(o.others.slice(1).join(", "))]);
+    rows.push(["Size", `${fmt(o.size[0], 1)}${o.size[1] !== o.size[0] ? ` × ${fmt(o.size[1], 1)}` : ""}′`]);
+    rows.push(["Flux, 1 GHz", o.s1000 != null ? `${fmt(o.s1000, 1)} Jy` : "–"]);
+    rows.push(["Spectral index", o.alpha != null ? fmt(o.alpha, 2) : "unknown"]);
+    atBand(fluxAt(o, fc), o.alpha == null && o.s1000 != null ? " (the 1 GHz flux: not extrapolated)" : "");
   }
   if (o.type === "pulsar") {
     kind = `Pulsar · ${o.jname}${o.assoc ? ` · ${o.assoc.replace(/,/g, ", ")}` : ""}`;
@@ -615,6 +677,8 @@ function wireControls() {
   data.calibrators.forEach((c) => { add(c.obj); if (c.alias) names.set(c.alias, c.obj); });
   data.dumps.forEach((d) => add(d.obj));
   data.sources3c.forEach((s) => add(s.obj));
+  data.nvss.forEach((s) => { add(s.obj); for (const n of [s.threec, s.nvssName]) if (n && !names.has(n)) names.set(n, s.obj); });
+  data.snrs.forEach((s) => { add(s.obj); for (const n of [s.gname, ...s.others]) if (!names.has(n)) names.set(n, s.obj); });
   data.pulsars.forEach((p) => { add(p.obj); if (p.jname !== p.name) names.set(p.jname, p.obj); });
   data.stars.forEach((s) => add(s.obj));
   $("names").innerHTML = ["Sun", "Moon", ...A.PLANETS, ...names.keys()].map((n) => `<option value="${esc(n)}">`).join("");
@@ -807,6 +871,8 @@ function credits() {
   const items = [
     `Radio sky: ${skyMeta.map}. Resampled from the HEALPix map (NSIDE ${skyMeta.nside}).`,
     `Radio sources: ${cat.credits["3crr"]}.`,
+    `Bright radio sources: ${cat.credits.nvss}. Kept: brighter than 5 Jy at 400 MHz, north of −40°; components within 4′ are one source.`,
+    `Supernova remnants: ${cat.credits.snrs}.`,
     `Pulsars: ${cat.credits.pulsars}.`,
     `Stars and constellations: ${cat.credits.stars}. Licence below.`,
     ...(horizon.flat ? [] : [`Skyline: computed from ${horizon.source} (https://registry.opendata.aws/terrain-tiles/).`]),

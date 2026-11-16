@@ -20,6 +20,8 @@ export const COLORS = {
   constellation: "rgba(150,170,215,0.30)",
   conName: "rgba(165,180,220,0.50)",
   source: "rgba(255,180,110,0.80)",
+  nvss: "rgba(185,167,255,0.75)",
+  snr: "rgba(182,229,138,0.70)",
   calibrator: "#ffd479",
   pulsar: "#7fdfff",
   dump: "#ff86d8",
@@ -123,7 +125,10 @@ export class Overlay {
     if (L.stars) this.stars();
     if (L.horizon) this.horizon();
     if (L.strip) this.strip();
-    if (L.sources) this.sources();
+    if (L.snrs) this.snrs();
+    if (L.nvss) this.nvss();
+    if (L.sources) this.sources3c();
+    if (L.calib) this.calibrators();
     if (L.pulsars) this.pulsars();
     if (L.dumps) this.dumps();
     if (L.planets) this.planets();
@@ -266,17 +271,54 @@ export class Overlay {
     }
   }
 
-  sources() {
+  // A point source as a ring sized by its flux at the band's centre
+  // (S.flux), shown above a flux that falls as the view zooms in.
+  pointSources(list, stroke, labelColor, prio) {
     const { ctx } = this, S = this.S, z = S.zoom;
-    for (const s of S.data.sources3c) {
+    for (const s of list) {
+      const f = S.flux(s.obj) ?? 0;
+      if (f * z * z < 8) continue;
       this.at(s.v, (x, y) => {
-        const r = 2 + 1.3 * Math.log10(s.s178 / 10);
-        ctx.strokeStyle = COLORS.source; ctx.lineWidth = 1;
+        const r = Math.max(1.6, 2 + 1.3 * Math.log10(f / 10));
+        ctx.strokeStyle = stroke; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.arc(x, y, r, 0, 2 * Math.PI); ctx.stroke();
         this.hit(x, y, r + 2, s.obj);
-        if (S.layers.labels && s.s178 * z * z > 45) this.labels.add(s.name, x, y, { prio: 10 + Math.log10(s.s178), color: "rgba(255,200,150,0.85)", font: "10px var(--font)" });
+        if (S.layers.labels && f * z * z > 45) this.labels.add(s.name, x, y, { prio: prio + Math.log10(f), color: labelColor, font: "10px var(--font)" });
       });
     }
+  }
+
+  sources3c() { this.pointSources(this.S.data.sources3c, COLORS.source, "rgba(255,200,150,0.85)", 10); }
+
+  // An NVSS source that is also a 3CRR source, or a compact remnant, is
+  // drawn once, by that layer when it is on.
+  nvss() {
+    const S = this.S, L = S.layers;
+    this.pointSources(S.data.nvss.filter((s) => !(L.sources && s.crr) && !(L.snrs && s.inSnr)),
+      COLORS.nvss, "rgba(200,185,255,0.85)", 9);
+  }
+
+  // A supernova remnant at its size: a circle of the catalogue's mean
+  // diameter (Green gives no position angle), or a small ring when that
+  // would be under a few pixels.
+  snrs() {
+    const { ctx } = this, S = this.S, z = S.zoom, cam = S.cam;
+    for (const s of S.data.snrs) {
+      const f = S.flux(s.obj) ?? 0;
+      const rDeg = Math.sqrt(s.size[0] * s.size[1]) / 120, rPx = rDeg * DEG * cam.s;
+      if (rPx < 3 && f * z * z < 8) continue;
+      if (rPx >= 3) this.line(smallCircle(s.v, rDeg, 48), COLORS.snr, 1, [4, 3]);
+      this.at(s.v, (x, y) => {
+        if (rPx < 3) { ctx.strokeStyle = COLORS.snr; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(x, y, 3, 0, 2 * Math.PI); ctx.stroke(); }
+        this.hit(x, y, Math.max(rPx, 6), s.obj);
+        if (S.layers.labels && !s.atCalibrator && (f * z * z > 60 || rPx > 25))
+          this.labels.add(s.name, x, y, { prio: 8 + Math.log10(Math.max(f, 1)), color: "rgba(196,235,160,0.85)", font: "10px var(--font)", center: rPx > 12 });
+      });
+    }
+  }
+
+  calibrators() {
+    const { ctx } = this, S = this.S;
     for (const s of S.data.calibrators) {
       this.at(s.v, (x, y) => {
         ctx.strokeStyle = COLORS.calibrator; ctx.lineWidth = 1.4;
