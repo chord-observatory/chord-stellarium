@@ -26,7 +26,7 @@ const LAYERS = [
   ["strip", "Drift strip", true, "#ffffff"],
   ["trace", "Drift trace", true, "rgb(255,205,120)"],
   ["horizon", "Horizon", true, "rgb(150,220,175)"],
-  ["land", "Landscape (made up)", false, "#c8b27a"],
+  ["land", "Landscape", true, "#c8b27a"],
   ["ecliptic", "Ecliptic", true, "rgb(240,205,110)"],
   ["grid_eq", "RA / Dec grid", false, "rgb(150,175,225)"],
   ["grid_gal", "Galactic grid", false, "rgb(225,165,125)"],
@@ -931,10 +931,10 @@ function writeHash() {
 // ---------------------------------------------------------------- explain and credits
 
 const STEPS = [
-  ["The sky above the dishes", "You are standing at the CHORD pathfinder at the Dominion Radio Astrophysical Observatory, near Penticton, BC. Drag to look in any direction; scroll to zoom. The hills are the real skyline around the site. The colours show the radio sky at 408 MHz. The bright band is the Milky Way, where most of the radio emission comes from. Turn on the Landscape layer to see the dishes, tilted to the pointing, under the daylit sky, with made-up ground and clouds."],
+  ["The sky above the dishes", "You are standing at the CHORD pathfinder at the Dominion Radio Astrophysical Observatory, near Penticton, BC. Drag to look in any direction; scroll to zoom. The hills are the real terrain around the site, and the dishes tilt to the pointing; the grass, the trees and the clouds are made up. The colours in the sky show the radio sky at 408 MHz. The bright band is the Milky Way, where most of the radio emission comes from. Turn off the Landscape layer to see the radio sky alone."],
   ["The beam", "The 64 dishes do not move. They all point at one declination on the meridian, the line from north to south through the zenith. The rings show where the beam has half its peak sensitivity, at the two ends of the chosen band. Low frequencies (red) see a wider patch of sky than high frequencies (violet)."],
   ["A drift scan", "The Earth turns, and the sky drifts through the beam once a day. The dashed lines show the strip of sky that passes through the beam. The dots along it show where the beam will point in the hours ahead, in local time."],
-  ["Radio sees in daylight", "In the ground and dome views the stars fade during the day, but the radio sky does not: radio waves pass through the daylit atmosphere, and through clouds too (turn on the Landscape layer to see). The Sun is still a very bright radio source, so the panel tells you when it crosses the strip."],
+  ["Radio sees in daylight", "In the ground and dome views the stars fade during the day, but the radio sky does not: radio waves pass through the daylit atmosphere, and through clouds too. The Sun is still a very bright radio source, so the panel tells you when it crosses the strip."],
   ["Frequency is distance", "Hydrogen gas emits at 1420 MHz. The expansion of the universe stretches that line to lower frequencies, so each frequency in the band sees hydrogen at one distance and one time in the past. The band panel shows the redshift and the lookback time."],
   ["The array beam", "Set the beam to Array to see the 8 × 8 grid of dishes added together. The narrow peaks repeat across the sky (grating lobes) because the dishes are evenly spaced. Over a wide band each lobe spreads into a small rainbow, because each frequency puts it at a different place."],
   ["Explore", "Select any object for its details, or search for it by name. Pulsars flash at their own period; the fastest show as a steady glow. Use the time controls to watch a day go by, or select a baseband dump to see where the dishes pointed when it was taken."],

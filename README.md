@@ -118,7 +118,7 @@ PUPPETEER_CACHE_DIR=$D/cache node shots.mjs http://127.0.0.1:8765/ $D/shots 1400
 - The drift trace scales the 408 MHz map as f^-2.55, averages it over the
   dish beam and adds a quiet Sun: a model of one dish's total power, not
   a measurement.
-- The Landscape layer (off by default) holds the scenery of the ground
+- The Landscape layer (on by default) holds the scenery of the ground
   and dome views: the daylight, the dishes, the clouds and the terrain.
   Without it the sky is the radio sky alone and the ground is plain.
 - The daylight is a model of the clear sky for the Sun's true altitude,
@@ -130,8 +130,11 @@ PUPPETEER_CACHE_DIR=$D/cache node shots.mjs http://127.0.0.1:8765/ $D/shots 1400
   made-up near ground turns into it, so the hills are the real ones, with
   made-up gullies and firs (more on slopes that face north). `skygl.js`
   bakes the terrain (`terrainAt`) once into four height maps (16-bit
-  heights, with firs, brush and boulders in the height itself) and
-  ray-marches them per pixel. The real skyline (`horizon.json`) is still
+  heights, with brush, boulders and the trees' outlines in the height
+  itself) and ray-marches them per pixel. Within 235 m each tree is
+  traced inside its outline as a true shape (`treeTrace`): firs in tiers
+  of boughs, pines with a trunk under clumps; the ray goes on through
+  the gaps. The real skyline (`horizon.json`) is still
   what hides the Sun, and backs the terrain beyond 8 km.
 - Near the observer the ground is made up: a plain, knolls, sagebrush
   and firs (no lake: there is none on site).
