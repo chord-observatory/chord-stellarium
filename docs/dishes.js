@@ -25,9 +25,10 @@ const curve = (x, strength) => strength * Math.pow(1 - Math.exp(-Math.max(x, 0))
 function shade(alb, n, L) {
   const s = Math.max(dot(n, L.sun), 0), m = Math.max(dot(n, L.moon), 0), up = 0.6 + 0.4 * n[2], down = 0.5 - 0.5 * n[2];
   const g = Math.max(L.sun[2], 0);
+  const tn = Math.min(1, Math.max(0, (L.sun[2] + 0.22) / 0.2)), night = 1 - tn * tn * (3 - 2 * tn);   // the night sky's soft light
   const c = [0, 1, 2].map((k) => {
     const lin = L.sunLin[k] * s + L.ambLin[k] * up + 0.25 * (L.sunLin[k] * g + L.ambLin[k]) * down
-      + L.moonLin[k] * m * 0.6 + [0.0015, 0.002, 0.0032][k];
+      + L.moonLin[k] * m * 0.6 + [0.075, 0.07, 0.21][k] * night * (0.75 + 0.25 * n[2]) + [0.0015, 0.002, 0.0032][k];
     return Math.round(255 * curve(alb * lin, L.strength));
   });
   return `rgb(${c[0]},${c[1]},${c[2]})`;

@@ -42,7 +42,6 @@ const AIM = { ground: { az0: 180, alt0: null }, dome: { az0: 180, alt0: 90 } };
 const GROUND_FOV = 100;                  // degrees across the free area at the ground view's start
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const WIND = [0.92, 0.38];               // the made-up wind blows toward east-northeast (unit vector)
-const LAKE = [35, -55, 32, 24];          // the made-up lake: centre east, north and radii (m) from the eye
 const MOON_LIGHT = [0.13, 0.145, 0.165]; // full moonlight on a white surface, exposed linear (bright enough to see by)
 const ANIM_MS = 33;                      // frame interval while the wind blows
 
@@ -319,7 +318,7 @@ function render() {
     dome: onSite, ground: st.layers.horizon, bore: frame.boreEnu,
     beamMode: { off: 0, dish: 1, array: 2 }[st.beamMode], beamGain: 1, band: st.band, array: site.array,
     sun: frame.sun.enu, moon: frame.moon.enu, moonLin: frame.moonLin,
-    land: st.layers.land && !!terrain, terrain, time: windTime(), wind: WIND, eyeH: EYE_M, lake: LAKE,
+    land: st.layers.land && !!terrain, terrain, time: windTime(), wind: WIND, eyeH: EYE_M,
     arrayBox: arrayBox(), sunOverHills: frame.sunOverHills,
   };
   if (frame.sky) gl.setSky(frame.sky);
@@ -967,7 +966,7 @@ function credits() {
     "Planets: E. M. Standish, Keplerian Elements for Approximate Positions of the Major Planets (JPL), valid 1800–2050; within 2′ of astropy, Jupiter and Saturn within 10′.",
     "The drift trace's Sun is a quiet Sun of about 25 sfu at 400 MHz, rising as f^0.8, seen through the main lobe only. The active Sun is a few times brighter, and bursts far more.",
     "Cosmology: flat ΛCDM with H₀ = 67.66 km/s/Mpc and Ωm = 0.3111 (Planck 2018).",
-    "Daylight and twilight: single scattering by air and aerosol, with ozone absorption, in a spherical atmosphere, plus an estimate of the higher orders; coefficients from E. Bruneton, A Qualitative and Quantitative Evaluation of 8 Clear Sky Models (2017). In the Landscape layer the hills are the real terrain (the skyline's SRTM data) with made-up detail and trees; the ground near you, the lake, the mist and the clouds are made up; the dishes follow photographs.",
+    "Daylight and twilight: single scattering by air and aerosol, with ozone absorption, in a spherical atmosphere, plus an estimate of the higher orders; coefficients from E. Bruneton, A Qualitative and Quantitative Evaluation of 8 Clear Sky Models (2017). In the Landscape layer the hills are the real terrain (the skyline's SRTM data) with made-up detail and trees; the ground near you, the mist and the clouds are made up; the dishes follow photographs.",
     "The beam is a model: a Gaussian main lobe for each dish, times the array factor of an ideal 8 × 8 grid. The real beam has sidelobes and errors not shown here.",
     `Catalogue built ${cat.generated}.`,
   ];

@@ -133,12 +133,12 @@ PUPPETEER_CACHE_DIR=$D/cache node shots.mjs http://127.0.0.1:8765/ $D/shots 1400
   heights, with firs, brush and boulders in the height itself) and
   ray-marches them per pixel. The real skyline (`horizon.json`) is still
   what hides the Sun, and backs the terrain beyond 8 km.
-- Near the observer the ground is made up: a plain, knolls, sagebrush,
-  and a lake with reeds whose shore is where the terrain meets the water.
+- Near the observer the ground is made up: a plain, knolls, sagebrush
+  and firs (no lake: there is none on site).
   Within about 40 m the grass stands in relief: each ray is marched down
   through the bunches, which bend in the wind, with flowers among them.
-  It is levelled where the dishes stand and along the sight lines to them
-  and to the lake, so the 2D-drawn dishes are never hidden; the dishes
+  It is levelled where the dishes stand and along the sight line to them,
+  so the 2D-drawn dishes are never hidden; the dishes
   shade the ground. Mist lies in the low ground about sunrise and sunset.
 - The clouds are made up: fractal noise on a steady wind; they shade the
   ground. While the wind blows the sky redraws every frame, at a lower
