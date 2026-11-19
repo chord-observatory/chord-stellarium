@@ -2,6 +2,7 @@
 
 The sky above the CHORD pathfinder at DRAO, computed in the browser: the
 408 MHz radio sky, the dishes' beam over any band, 3CRR sources, pulsars,
+CHIME's fast radio bursts,
 the baseband dumps, stars, planets, the Sun and the Moon, over the real
 skyline, at any time.
 
@@ -32,6 +33,7 @@ choice (Tau A, Cyg A or a declination), not read from the dishes.
 | `docs/trace.js` | The drift-trace model under the sky | by hand |
 | `docs/site.json` | Site, array, pointings, calibrators, baseband dumps | **by hand** |
 | `docs/catalog.json` | 3CRR, bright NVSS sources, Galactic SNRs, ATNF pulsars, stars, constellations | `tools/build_catalog.py` |
+| `docs/frbs.json` | Fast radio bursts: the second CHIME/FRB catalogue's one-off bursts and repeating sources | `tools/make_frbs.py` |
 | `docs/sky.png`, `docs/sky.json` | 408 MHz sky, 2048 × 1024, ICRS plate carrée | `tools/make_sky.py` |
 | `docs/horizon.json` | Terrain skyline every 0.5° of azimuth (optional: flat without it) | `tools/make_horizon.py` |
 | `tools/` | The builders above, and the tests | |
@@ -72,6 +74,9 @@ To look at a change before pushing, serve `docs/` locally
     size; their 1 GHz flux and index give the flux in the band.
   The page scales each source's flux to the band's centre with its index.
   VizieR's servers come and go: the script tries CDS, then CfA.
+- `tools/make_frbs.py`: downloads the second CHIME/FRB catalogue's CSV and
+  writes `docs/frbs.json`: the one-off bursts, and one entry per repeating
+  source at its best-localised burst. Stdlib only.
 - `tools/make_sky.py` / `tools/unpack_sky.py`: resample the Haslam map
   into `docs/sky.png` and `docs/sky.json`. `make_sky.py` needs numpy,
   astropy, Pillow and `choco.healpix`, so it runs in choco's venv on the

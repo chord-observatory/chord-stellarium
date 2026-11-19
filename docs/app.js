@@ -20,6 +20,7 @@ const LAYERS = [
   ["nvss", "NVSS sources", true, "#b9a7ff"],
   ["snrs", "Supernova remnants", true, "#b6e58a"],
   ["pulsars", "Pulsars", true, "#7fdfff"],
+  ["frbs", "Fast radio bursts", true, "#ff6b7d"],
   ["dumps", "Baseband dumps", true, "#ff86d8"],
   ["sunmoon", "Sun and Moon", true, "#ffe08a"],
   ["planets", "Planets", true, "#eed8b2"],
@@ -54,7 +55,7 @@ const st = {
   selected: null,
 };
 
-let site, cat, skyMeta, horizon, gl, overlay, trace, data, cam, frame, glParams, dpr = 1;
+let site, cat, frbCat, skyMeta, horizon, gl, overlay, trace, data, cam, frame, glParams, dpr = 1;
 let glScale = 1, frameMs = 16, scaleAt = 0;   // the sky canvas's resolution while the wind blows (see govern)
 let dirty = true, lastDraw = 0, lastWind = 0, lastPanels = 0, lastHash = 0, hits = [], blink = [];
 const nameIndex = new Map();             // search names -> objects
@@ -68,8 +69,9 @@ async function load() {
   img.src = "sky.png";
   // The skyline is optional: without it the horizon is flat.
   const flat = { alt_deg: new Array(720).fill(0), dist_km: new Array(720).fill(0), step_deg: 0.5, flat: true };
-  [site, cat, skyMeta, horizon] = await Promise.all([get("site.json"), get("catalog.json"), get("sky.json"),
-    get("horizon.json").catch(() => flat), imgLoaded]);
+  // The fast radio bursts are optional too: without them the layer is empty.
+  [site, cat, skyMeta, horizon, frbCat] = await Promise.all([get("site.json"), get("catalog.json"), get("sky.json"),
+    get("horizon.json").catch(() => flat), get("frbs.json").catch(() => null), imgLoaded]);
   return img;
 }
 
@@ -140,7 +142,15 @@ function buildData() {
     const o = { type: "dump", name: d.name, ms, note: d.note, ra, dec: dd, v };
     return { ...o, label: `dump ${d.utc.slice(5, 10)} ${d.utc.slice(11, 16)}Z`, obj: o };
   });
-  return { calibrators, sources3c, nvss, snrs, pulsars, stars, conLines, conNames, dumps };
+  // One-off bursts, then the repeating sources (one entry each).
+  const frb = (f, repeater) => {
+    const o = { type: "frb", name: f.name, ra: f.ra, dec: f.dec, v: A.vec(f.ra, f.dec), err: f.err_deg, dm: f.dm, dmExc: f.dm_exc,
+      repeater, fluence: repeater ? f.fluence_max_jy_ms : f.fluence_jy_ms, mjd: repeater ? null : f.mjd,
+      bursts: repeater ? f.bursts : 1, first: f.mjd_first, last: f.mjd_last };
+    return { ...o, obj: o };
+  };
+  const frbs = frbCat ? [...rows(frbCat.bursts).map((f) => frb(f, false)), ...rows(frbCat.repeaters).map((f) => frb(f, true))] : [];
+  return { calibrators, sources3c, nvss, snrs, pulsars, frbs, stars, conLines, conNames, dumps };
 }
 
 /** Flux density (Jy) of a catalogue source at f MHz, from its catalogue
@@ -464,7 +474,7 @@ function bandFacts() {
 }
 
 function tagFor(o) {
-  return { calibrator: ["cal", "t-cal"], "3crr": ["3C", "t-src"], pulsar: ["PSR", "t-psr"], dump: ["dump", "t-dump"],
+  return { calibrator: ["cal", "t-cal"], "3crr": ["3C", "t-src"], pulsar: ["PSR", "t-psr"], frb: ["FRB", "t-frb"], dump: ["dump", "t-dump"],
     planet: ["planet", "t-planet"], nvss: ["NVSS", "t-nvss"], snr: ["SNR", "t-snr"],
     sun: ["Sun", "t-sun"], moon: ["Moon", "t-moon"], star: ["star", "t-star"] }[o.type];
 }
@@ -481,6 +491,7 @@ function candidates() {
     ...(L.nvss ? data.nvss.filter((s) => !(L.sources && s.crr) && !(L.snrs && s.inSnr)).map((s) => s.obj) : []),
     ...(L.snrs ? data.snrs.filter((s) => !s.atCalibrator).map((s) => s.obj) : []),
     ...data.pulsars.filter((p) => p.highlight || p.flux >= 20).map((p) => p.obj),
+    ...(L.frbs ? data.frbs.filter((f) => f.repeater && f.bursts >= 10).map((f) => f.obj) : []),   // the busy repeaters
     { type: "sun", name: "Sun", v: frame.sun.j2000 },
     { type: "moon", name: "Moon", v: frame.moon.j2000 },
     ...frame.planets.map((p) => p.obj),
@@ -619,6 +630,19 @@ function card(o) {
     rows.push(["Period", o.p0 < 0.1 ? `${fmt(o.p0 * 1000, 2)} ms` : `${fmt(o.p0, 4)} s`]);
     rows.push(["DM", o.dm != null ? `${fmt(o.dm, 2)} pc cm⁻³` : "–"]);
     rows.push(["Flux", `${o.s400 != null ? `${fmt(o.s400, 1)} mJy at 400 MHz` : ""}${o.s400 != null && o.s1400 != null ? ", " : ""}${o.s1400 != null ? `${fmt(o.s1400, 2)} mJy at 1400` : ""}`]);
+  }
+  if (o.type === "frb") {
+    const utc = (mjd, n) => new Date((mjd - 40587) * 86400000).toISOString().slice(0, n).replace("T", " ");
+    kind = `${o.repeater ? "Repeating fast radio burst" : "Fast radio burst"} · CHIME/FRB`;
+    if (o.repeater) {
+      rows.push(["Bursts", `${o.bursts} in the catalogue`]);
+      rows.push(["Seen", `${utc(o.first, 10)} to ${utc(o.last, 10)}`]);
+    } else rows.push(["Arrived", `${utc(o.mjd, 19)} UTC, once`]);
+    rows.push(["DM", `${fmt(o.dm, 1)} pc cm⁻³${o.dmExc != null ? ` (${fmt(Math.max(o.dmExc, 0), 0)} from beyond the Galaxy)` : ""}`]);
+    if (o.fluence != null) rows.push([o.repeater ? "Brightest burst" : "Fluence", `${fmt(o.fluence, o.fluence < 10 ? 1 : 0)} Jy ms (400–800 MHz)`]);
+    if (o.err != null) rows.push(["Position", o.err < 0.005 ? "known to better than 0.01°" : `good to about ${fmt(o.err, 2)}°`]);
+    note = o.repeater ? "A source that has burst more than once. Nobody can say when the next burst will come."
+      : "A single flash a few milliseconds long, almost certainly from another galaxy. The catalogue has no second burst from here.";
   }
   if (o.type === "star") { kind = "Star"; rows.push(["Magnitude", fmt(o.mag, 2)]); }
   if (o.type === "dump") {
@@ -766,6 +790,7 @@ function wireControls() {
   data.nvss.forEach((s) => { add(s.obj); for (const n of [s.threec, s.nvssName]) if (n && !names.has(n)) names.set(n, s.obj); });
   data.snrs.forEach((s) => { add(s.obj); for (const n of [s.gname, ...s.others]) if (!names.has(n)) names.set(n, s.obj); });
   data.pulsars.forEach((p) => { add(p.obj); if (p.jname !== p.name) names.set(p.jname, p.obj); });
+  data.frbs.forEach((f) => add(f.obj));
   data.stars.forEach((s) => add(s.obj));
   $("names").innerHTML = ["Sun", "Moon", ...A.PLANETS, ...names.keys()].map((n) => `<option value="${esc(n)}">`).join("");
   $("search").onchange = (e) => {
@@ -937,7 +962,7 @@ const STEPS = [
   ["Radio sees in daylight", "In the ground and dome views the stars fade during the day, but the radio sky does not: radio waves pass through the daylit atmosphere, and through clouds too. The Sun is still a very bright radio source, so the panel tells you when it crosses the strip."],
   ["Frequency is distance", "Hydrogen gas emits at 1420 MHz. The expansion of the universe stretches that line to lower frequencies, so each frequency in the band sees hydrogen at one distance and one time in the past. The band panel shows the redshift and the lookback time."],
   ["The array beam", "Set the beam to Array to see the 8 × 8 grid of dishes added together. The narrow peaks repeat across the sky (grating lobes) because the dishes are evenly spaced. Over a wide band each lobe spreads into a small rainbow, because each frequency puts it at a different place."],
-  ["Explore", "Select any object for its details, or search for it by name. Pulsars flash at their own period; the fastest show as a steady glow. Use the time controls to watch a day go by, or select a baseband dump to see where the dishes pointed when it was taken."],
+  ["Explore", "Select any object for its details, or search for it by name. Pulsars flash at their own period; the fastest show as a steady glow. A small × is a fast radio burst that CHIME, the telescope next door, caught once; a ringed × is a source that has burst again. Use the time controls to watch a day go by, or select a baseband dump to see where the dishes pointed when it was taken."],
 ];
 function wireExplain() {
   let i = 0;
@@ -960,6 +985,7 @@ function credits() {
     `Bright radio sources: ${cat.credits.nvss}. Kept: brighter than 5 Jy at 400 MHz, north of −40°; components within 4′ are one source.`,
     `Supernova remnants: ${cat.credits.snrs}.`,
     `Pulsars: ${cat.credits.pulsars}.`,
+    ...(frbCat ? [`Fast radio bursts: ${frbCat.credit}. The bursts CHIME saw from the same site up to September 2023; a repeater is drawn once, at its best-measured position.`] : []),
     `Stars and constellations: ${cat.credits.stars}. Licence below.`,
     ...(horizon.flat ? [] : [`Skyline: computed from ${horizon.source} (https://registry.opendata.aws/terrain-tiles/).`]),
     "The Moon's face: NASA's Scientific Visualization Studio, CGI Moon Kit, from the Lunar Reconnaissance Orbiter camera's mosaic (https://svs.gsfc.nasa.gov/4720).",

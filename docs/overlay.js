@@ -24,6 +24,7 @@ export const COLORS = {
   snr: "rgba(182,229,138,0.70)",
   calibrator: "#ffd479",
   pulsar: "#7fdfff",
+  frb: "#ff6b7d",
   dump: "#ff86d8",
   strip: "rgba(255,255,255,0.55)",
   stripEdge: "rgba(255,255,255,0.22)",
@@ -39,6 +40,8 @@ const PLANET_STYLE = {
   Mercury: ["#c4beb4", 2.6], Venus: ["#f6ecca", 4.2], Mars: ["#ec7c55", 3.3], Jupiter: ["#eed8b2", 4.0],
   Saturn: ["#e8d290", 3.4], Uranus: ["#a4e6e8", 2.6], Neptune: ["#86adff", 2.4],
 };
+
+const FRB_MIN_JY_MS = 30;                // one-off bursts fainter than this show only when zoomed in
 
 // Tints for the band edges, matching skygl.js's bandTint at s = 0 and 1.
 export const LOW_TINT = "rgb(255,92,74)", HIGH_TINT = "rgb(196,92,255)";
@@ -130,6 +133,7 @@ export class Overlay {
     if (L.sources) this.sources3c();
     if (L.calib) this.calibrators();
     if (L.pulsars) this.pulsars();
+    if (L.frbs) this.frbs();
     if (L.dumps) this.dumps();
     if (L.planets) this.planets();
     if (L.sunmoon) this.sunMoon();
@@ -347,6 +351,26 @@ export class Overlay {
         this.hit(x, y, r + 2, p.obj);
         if (S.layers.labels && (p.highlight || p.flux * z * z > 400))
           this.labels.add(p.name, x, y, { prio: p.highlight ? 60 : 8 + Math.log10(p.flux), color: p.highlight ? COLORS.pulsar : "rgba(127,223,255,0.7)", font: p.highlight ? "11px var(--font)" : "10px var(--font)" });
+      });
+    }
+  }
+
+  // Fast radio bursts: a one-off burst is a small x, shown above a fluence
+  // that falls as the view zooms in; a repeating source is an x in a ring.
+  frbs() {
+    const { ctx } = this, S = this.S, z = S.zoom, min = FRB_MIN_JY_MS / (z * z);
+    for (const f of S.data.frbs) {
+      const fl = f.fluence ?? 1;
+      if (!f.repeater && fl < min) continue;
+      this.at(f.v, (x, y) => {
+        const r = f.repeater ? 2.6 : 1.5 + 0.6 * Math.log10(Math.max(fl, 1));
+        ctx.strokeStyle = f.repeater ? COLORS.frb : "rgba(255,107,125,0.65)"; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(x - r, y - r); ctx.lineTo(x + r, y + r); ctx.moveTo(x + r, y - r); ctx.lineTo(x - r, y + r);
+        if (f.repeater) { ctx.moveTo(x + 5.5, y); ctx.arc(x, y, 5.5, 0, 2 * Math.PI); }
+        ctx.stroke();
+        this.hit(x, y, f.repeater ? 7 : r + 2, f.obj);
+        if (S.layers.labels && (f.repeater ? f.bursts * z * z > 60 : fl * z * z > 3000))
+          this.labels.add(f.name, x, y, { prio: f.repeater ? 20 + Math.log10(f.bursts) : 5 + Math.log10(fl), color: "rgba(255,140,152,0.9)", font: "10px var(--font)", gap: f.repeater ? 8 : 6 });
       });
     }
   }
