@@ -338,7 +338,8 @@ function render() {
     drawDishes(fg, {
       cam, dpr, ob: frame.ob, array: site.array, bore: frame.boreEnu,
       light: { sun: frame.sun.enu, moon: frame.moon.enu, sunLin: frame.sky.sunLin.map((x) => x * frame.sunOverHills),
-        ambLin: frame.sky.ambLin, moonLin: frame.moonLin, strength: frame.sky.strength },
+        ambLin: frame.sky.ambLin, moonLin: frame.moonLin, strength: frame.sky.strength,
+        cloud: (P) => gl.cloudShade(P, frame.sun.enu, glParams.time, WIND) },
     });
   } else fg.clearRect(0, 0, $("fg").width, $("fg").height);
   const centre = unproject(cam, v.w / 2, v.h / 2);

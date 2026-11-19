@@ -82,10 +82,11 @@ function facets(nr, ns, R, f, a, u, w, L, view) {
 
 /**
  * S: { cam, dpr, ob, array: site.json array, bore: the beam (ENU), light:
- * { sun, moon (ENU), sunLin, ambLin, moonLin, strength } }.
+ * { sun, moon (ENU), sunLin, ambLin, moonLin, strength, cloud(P): the share
+ * of sunlight the clouds let through to P (m east, north) } }.
  */
 export function drawDishes(ctx, S) {
-  const { cam, ob, array, bore: a, light: L } = S;
+  const { cam, ob, array, bore: a, light: L0 } = S;
   ctx.setTransform(S.dpr, 0, 0, S.dpr, 0, 0);
   ctx.clearRect(0, 0, cam.w, cam.h);
   const scr = (P) => project(cam, apply(ob.fromEnu, norm(P)));
@@ -98,11 +99,20 @@ export function drawDishes(ctx, S) {
     return [V[0] + a[0] * r * r / (4 * f) + u[0] * c + w[0] * s, V[1] + a[1] * r * r / (4 * f) + u[1] * c + w[1] * s,
       V[2] + a[2] * r * r / (4 * f) + u[2] * c + w[2] * s];
   };
-  const metal = shade(0.3, [0, 0, 1], L), box = shade(0.8, norm(add([0, 0, 0.3], a, -1)), L);
-  const lip = shade(0.9, norm(add(a, [0, 0, 1], 1)), L);
   const view = norm([-ARRAY_AT[0], -ARRAY_AT[1], EYE_M]);       // from the array to the eye
-  const meshes = {};
-  const mesh = (nr, ns) => (meshes[nr] ??= { nr, ns, f: facets(nr, ns, R, f, a, u, w, L, view) });
+  // A cloud's shadow crosses the array dish by dish: the colours are worked
+  // out once for each of a few levels of sunlight, and each dish takes the
+  // level of the shadow where it stands.
+  const LEVELS = 8, levels = [];
+  const level = (B) => {
+    const k = Math.round(L0.cloud(B) * LEVELS);
+    if (!levels[k]) {
+      const L = { ...L0, sunLin: L0.sunLin.map((x) => (x * k) / LEVELS) };
+      levels[k] = { L, meshes: {}, metal: shade(0.3, [0, 0, 1], L), box: shade(0.8, norm(add([0, 0, 0.3], a, -1)), L),
+        lip: shade(0.9, norm(add(a, [0, 0, 1], 1)), L) };
+    }
+    return levels[k];
+  };
 
   const dishes = [];
   for (let i = 0; i < array.nx; i++) for (let j = 0; j < array.ny; j++) {
@@ -115,6 +125,8 @@ export function drawDishes(ctx, S) {
     const v0 = scr(V), base = scr(B), m1 = scr(add(V, u, 1));
     if (!v0 || !base || !m1) continue;
     const pxPerM = Math.hypot(m1[0] - v0[0], m1[1] - v0[1]);
+    const lv = level(B), { metal, box, lip } = lv;
+    const mesh = (nr, ns) => (lv.meshes[nr] ??= { nr, ns, f: facets(nr, ns, R, f, a, u, w, lv.L, view) });
     const M = pxPerM > 9 ? mesh(7, 32) : pxPerM > 3 ? mesh(4, 20) : mesh(2, 12);
     // The facets' corners on screen: ring i (0 the vertex .. nr the rim), sector j.
     const P = [], W = [];

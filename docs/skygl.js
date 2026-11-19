@@ -642,7 +642,7 @@ float dishShade(vec2 P) {
 
 // The bunchgrass standing at Q (m): its height, 0..1 of GRASS.
 float grassH(vec2 Q) {
-  float bunch = smoothstep(0.15, 0.5, noise(Q * 6.0));
+  float bunch = smoothstep(0.09, 0.44, noise(Q * 6.0));
   return bunch * (0.3 + 0.7 * noise(mat2(0.8, 0.6, -0.6, 0.8) * Q * 41.0));
 }
 
@@ -910,9 +910,9 @@ vec3 groundAt(vec3 e, float t, float pix) {
     straw = mix(straw, vec3(0.25, 0.26, 0.19) * (0.7 + 0.6 * fbm(P * 0.7 + 3.0, lod * 0.7)), sage * 0.75);
     straw *= 0.75 + 0.5 * fine;
     straw = mix(straw, straw * 1.35 + vec3(0.03, 0.03, 0.02), sheen * 0.6 * smoothstep(0.3, 0.9, f));   // gusts show the pale side
-    vec3 soil = mix(vec3(0.15, 0.115, 0.08), straw * 0.55, smoothstep(0.45, 0.7, noise(Q * 19.0 + 7.0)) * near);   // soil and litter
+    vec3 soil = mix(vec3(0.21, 0.165, 0.11), straw * 0.62, smoothstep(0.45, 0.7, noise(Q * 19.0 + 7.0)) * near);   // soil and litter
     vec3 alb = mix(soil, straw, smoothstep(0.0, 0.2, f));
-    float ao = 0.4 + 0.6 * smoothstep(0.0, 0.7, f);
+    float ao = 0.58 + 0.42 * smoothstep(0.0, 0.7, f);
     if (fl > 0.9) {
       alb = flCol;
       ao = 1.0; lit = 1.0;
@@ -1050,6 +1050,32 @@ function link(gl, frag) {
 const glMat = (m) => new Float32Array([m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]]);
 
 export class SkyGL {
+  /** Sunlight the cumulus lets through to the ground at P (m east, north of
+   *  the observer): the shader's cloudShade(), for what is drawn outside it
+   *  (the dishes).  sun: ENU unit vector; time, wind: as given to draw(). */
+  cloudShade(P, sun, time, wind) {
+    if (sun[2] < 0.02) return 1;
+    const N = this.noise;
+    const noise = (x, y) => {
+      const ix = Math.floor(x), iy = Math.floor(y);
+      let fx = x - ix, fy = y - iy;
+      fx = fx * fx * (3 - 2 * fx); fy = fy * fy * (3 - 2 * fy);
+      const at = (i, j) => N[(((j % 256) + 256) % 256 * 256 + ((i % 256) + 256) % 256) * 4] / 255;
+      return (1 - fy) * ((1 - fx) * at(ix, iy) + fx * at(ix + 1, iy)) + fy * ((1 - fx) * at(ix, iy + 1) + fx * at(ix + 1, iy + 1));
+    };
+    const k = 2 / Math.max(sun[2], 0.08), qx = P[0] / 1000 + sun[0] * k, qy = P[1] / 1000 + sun[1] * k;
+    const cover = 0.5 + 0.24 * (noise(qx * 0.02 + 40, qy * 0.02 + 40) - 0.5);
+    let x = qx * 0.45 - wind[0] * time * 0.0027, y = qy * 0.45 - wind[1] * time * 0.0027, a = 0.5, s = 0, lod = 0.1;
+    for (let o = 0; o < 6; o++) {                             // fbm(), as in the shader
+      const w = Math.min(1, Math.max(0, 1.5 - 2 * lod));
+      s += a * (0.5 + (noise(x, y) - 0.5) * w);
+      [x, y] = [1.6 * x - 1.2 * y + 17, 1.2 * x + 1.6 * y + 17];
+      lod *= 2; a *= 0.5;
+    }
+    const t = Math.min(1, Math.max(0, (s / 0.984 - cover) / 0.2));
+    return 1 - 0.8 * t * t * (3 - 2 * t);
+  }
+
   /** horizon: { alt: skyline altitude (deg) per azimuth step, from north through east } */
   constructor(canvas, image, horizon) {
     const gl = canvas.getContext("webgl", { antialias: false, premultipliedAlpha: false, preserveDrawingBuffer: true });
@@ -1100,6 +1126,7 @@ export class SkyGL {
     let seed = 0x9e3779b9;                                    // xorshift: the same clouds on every load
     for (let i = 0; i < noise.length; i++) { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; noise[i] = seed & 255; }
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 256, 0, gl.RGBA, gl.UNSIGNED_BYTE, noise);
+    this.noise = noise;
     for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR],
       [gl.TEXTURE_WRAP_S, gl.REPEAT], [gl.TEXTURE_WRAP_T, gl.REPEAT]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
     gl.activeTexture(gl.TEXTURE0);
