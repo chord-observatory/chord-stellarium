@@ -804,19 +804,22 @@ vec3 groundAt(vec3 e, float t, float pix) {
     vec2 pq = abs(P - uArrayBox.xy) - uArrayBox.zw + 2.0;
     float onPad = 1.0 - smoothstep(-0.5, 0.5, max(pq.x, pq.y));
     float grassy = (1.0 - rock) * (1.0 - onPad) * (1.0 - woody);
-    float bloom = smoothstep(0.5, 0.75, noise(P * 0.08 + 60.0)) * grassy;
+    float bloom = smoothstep(0.38, 0.7, noise(P * 0.08 + 60.0)) * grassy;
 
     // Grass.  Close by it stands in relief: the ray is marched down through
     // the bunches, bent by the wind, with flowers among them.  f: how high
-    // in the grass the ray stops (0 the soil .. 1); Q: where; fl: 0, or a
-    // flower's kind (1 .. 2); lit: sunlight past the bunches next to it.
+    // in the grass the ray stops (0 the soil .. 1); Q: where; fl: 0, 0.5 on
+    // a flower's stem, 1 on its head (flCol: the head's colour there); lit:
+    // sunlight past the bunches next to it.
     float f = grassH(P) * near + 0.34 * (1.0 - near), fl = 0.0, lit = 1.0;
     vec2 Q = P;
+    vec3 flCol = vec3(0.0);
     float k = clamp(1.6 - t / 30.0, 0.0, 1.0) * step(0.5, grassy);
     if (k > 0.0) {
       float Hm = GRASS * k * (0.5 + 0.5 * noise(P * 0.9 + 9.0));       // taller and shorter stands
       float rate = max(dot(-n.xy / max(n.z, 0.2), e.xy) - e.z, 0.03);    // height lost per metre of ray
-      float back = min(1.3 * Hm / rate, 5.0), dt = back / 26.0;
+      // Where flowers may grow the march starts above the tallest of them.
+      float back = min(max(1.3 * Hm, bloom > 0.0 ? 1.12 * GRASS * k : 0.0) / rate, 5.0), dt = back / 26.0;
       float jit = texture2D(uNoise, gl_FragCoord.xy / 256.0).a;
       float bend = (0.05 + 0.12 * sheen) * (0.7 + 0.3 * sin(uTime * 2.6 + dot(P, uWind) * 1.3));
       f = 0.0;
@@ -825,13 +828,58 @@ vec3 groundAt(vec3 e, float t, float pix) {
         float s = tau * rate / Hm;
         vec2 q = P - e.xy * tau - uWind * bend * s * s;
         if (bloom > 0.0) {
-          vec2 gi = floor(q * 3.0);
-          vec4 rr = texture2D(uNoise, (gi + 0.5) / 256.0);
-          float top = 0.75 + 0.5 * rr.a;
-          if (rr.r < bloom * 0.4 && s < top && length(q * 3.0 - gi - 0.25 - 0.5 * rr.gb) < 0.11) {
-            f = s; Q = q; fl = s > top - 0.2 - 0.25 * step(0.45, rr.a) ? 1.0 + rr.a : 0.5;
-            break;
+          // A flower may stand in each third-of-a-metre cell: a head on a
+          // thin stem.  The head is an ellipsoid, met exactly by the piece
+          // of the ray since the last step (looked for in the cells at both
+          // of its ends), so its outline is clean.
+          float sP = (tau + dt) * rate / Hm;
+          vec2 qP = P - e.xy * (tau + dt) - uWind * bend * sP * sP;
+          for (int w = 0; w < 2; w++) {
+            vec2 gi = floor((w == 0 ? qP : q) * 3.0);
+            vec4 rr = texture2D(uNoise, (gi + 0.5) / 256.0);
+            if (rr.r >= 0.4) continue;
+            vec2 c = (gi + 0.25 + 0.5 * rr.gb) / 3.0;
+            // Whether it grows, and how tall, depend on the flower's own place, not on the pixel.
+            if (rr.r >= 0.4 * smoothstep(0.44, 0.7, noise(c * 0.08 + 60.0))) continue;
+            float top = (0.68 + 0.4 * fract(rr.a * 7.0)) * GRASS * k;
+            // Balsamroot: a yellow daisy.  Lupine: a tall violet spike.  Yarrow: a low white dome.
+            vec2 RV = rr.a < 0.45 ? vec2(0.055, 0.03) : rr.a < 0.8 ? vec2(0.024, 0.10) : vec2(0.055, 0.026);
+            vec3 sc = vec3(1.0, 1.0, RV.x / RV.y), C = vec3(c, top - RV.y);
+            vec3 a3 = (vec3(qP, sP * Hm) - C) * sc, d3 = (vec3(q, s * Hm) - C) * sc - a3;
+            float aa = dot(d3, d3), bb = dot(a3, d3), cc = dot(a3, a3) - RV.x * RV.x;
+            float disc = bb * bb - aa * cc, u = disc > 0.0 ? max((-bb - sqrt(disc)) / aa, 0.0) : 2.0;
+            if (u <= 1.0 && (cc < 0.0 || bb < 0.0)) {
+              vec3 l = (a3 + d3 * u) / RV.x;                 // on the unit sphere: east, north, up
+              float th = atan(l.y, l.x) + rr.g * 6.28;
+              if (rr.a < 0.45) {
+                // The face looks up and to one side; rays about a darker centre, green behind.
+                vec3 ax = normalize(vec3(cos(rr.b * 6.28), sin(rr.b * 6.28), 1.3));
+                vec3 bx = normalize(cross(ax, vec3(0.0, 0.0, 1.0))), by = cross(ax, bx);
+                float ca = dot(l, ax), pet = abs(sin(atan(dot(l, by), dot(l, bx)) * 6.5));
+                flCol = ca > 0.9 ? vec3(0.50, 0.30, 0.03)
+                      : ca > -0.6 ? vec3(0.95, 0.68, 0.04) * (0.62 + 0.38 * smoothstep(0.0, 0.5, pet)) * (0.75 + 0.25 * ca)
+                      : vec3(0.22, 0.27, 0.10);
+              } else if (rr.a < 0.8) {
+                float whorl = sin(l.z * 12.0 + 0.5 * sin(th * 4.0));   // rings of pea flowers up the spike
+                flCol = mix(vec3(0.17, 0.09, 0.50), vec3(0.40, 0.29, 0.80), smoothstep(-0.3, 0.6, whorl));
+                flCol = mix(flCol, vec3(0.40, 0.45, 0.32), smoothstep(0.65, 0.95, l.z));   // buds at the tip
+              } else {
+                float florets = sin(l.x * 13.0 + rr.b * 9.0) * sin(l.y * 13.0 + rr.g * 9.0);
+                flCol = mix(vec3(0.58, 0.58, 0.46), vec3(0.90, 0.89, 0.80), smoothstep(-0.5, 0.3, florets));
+                flCol = mix(vec3(0.25, 0.30, 0.14), flCol, smoothstep(-0.5, -0.1, l.z));    // green beneath
+              }
+              flCol *= 0.66 + 0.34 * smoothstep(-0.7, 0.5, l.z);
+              f = mix(sP, s, u); Q = mix(qP, q, u); fl = 1.0;
+              break;
+            }
+            vec2 ad = c - qP, dd = q - qP;
+            float us = clamp(dot(ad, dd) / max(dot(dd, dd), 1e-8), 0.0, 1.0), zs = mix(sP, s, us) * Hm;
+            if (lod < 0.02 && length(ad - dd * us) < 0.006 && zs < top - RV.y) {
+              f = zs / Hm; Q = mix(qP, q, us); fl = 0.5;
+              break;
+            }
           }
+          if (fl > 0.0) break;
         }
         if (s < grassH(q)) {
           float a = tau + dt, b = tau;                       // close in on the blade's edge
@@ -866,11 +914,10 @@ vec3 groundAt(vec3 e, float t, float pix) {
     vec3 alb = mix(soil, straw, smoothstep(0.0, 0.2, f));
     float ao = 0.4 + 0.6 * smoothstep(0.0, 0.7, f);
     if (fl > 0.9) {
-      // Balsamroot yellow, lupine violet and yarrow white.
-      alb = fl < 1.45 ? vec3(0.85, 0.63, 0.05) : fl < 1.8 ? vec3(0.37, 0.25, 0.66) : vec3(0.80, 0.80, 0.74);
+      alb = flCol;
       ao = 1.0; lit = 1.0;
-    } else if (fl > 0.0) { alb = vec3(0.16, 0.22, 0.08); ao = 0.8; }
-    alb = mix(alb, vec3(0.64, 0.52, 0.20), bloom * 0.12 * (1.0 - k));        // far off, a tint where the flowers grow
+    } else if (fl > 0.0) { alb = vec3(0.17, 0.21, 0.08); ao = 0.8; }
+    alb = mix(alb, vec3(0.64, 0.52, 0.20), smoothstep(0.2, 0.9, bloom) * 0.12 * (1.0 - k));        // far off, a tint where the flowers grow
 
     // Rock: crags, boulders and steep faces; bedded, cracked, with lichen.
     if (rock > 0.01) {
