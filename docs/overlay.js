@@ -24,7 +24,7 @@ export const COLORS = {
   snr: "rgba(182,229,138,0.70)",
   calibrator: "#ffd479",
   pulsar: "#7fdfff",
-  frb: "#ff6b7d",
+  frb: "#e2c4d4",
   dump: "#ff86d8",
   strip: "rgba(255,255,255,0.55)",
   stripEdge: "rgba(255,255,255,0.22)",
@@ -355,22 +355,25 @@ export class Overlay {
     }
   }
 
-  // Fast radio bursts: a one-off burst is a small x, shown above a fluence
-  // that falls as the view zooms in; a repeating source is an x in a ring.
+  // Fast radio bursts, kept quiet: a one-off burst is a faint dot, shown
+  // above a fluence that falls as the view zooms in; a repeating source
+  // is a dot in a thin ring.
   frbs() {
     const { ctx } = this, S = this.S, z = S.zoom, min = FRB_MIN_JY_MS / (z * z);
     for (const f of S.data.frbs) {
       const fl = f.fluence ?? 1;
       if (!f.repeater && fl < min) continue;
       this.at(f.v, (x, y) => {
-        const r = f.repeater ? 2.6 : 1.5 + 0.6 * Math.log10(Math.max(fl, 1));
-        ctx.strokeStyle = f.repeater ? COLORS.frb : "rgba(255,107,125,0.65)"; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(x - r, y - r); ctx.lineTo(x + r, y + r); ctx.moveTo(x + r, y - r); ctx.lineTo(x - r, y + r);
-        if (f.repeater) { ctx.moveTo(x + 5.5, y); ctx.arc(x, y, 5.5, 0, 2 * Math.PI); }
-        ctx.stroke();
-        this.hit(x, y, f.repeater ? 7 : r + 2, f.obj);
-        if (S.layers.labels && (f.repeater ? f.bursts * z * z > 60 : fl * z * z > 3000))
-          this.labels.add(f.name, x, y, { prio: f.repeater ? 20 + Math.log10(f.bursts) : 5 + Math.log10(fl), color: "rgba(255,140,152,0.9)", font: "10px var(--font)", gap: f.repeater ? 8 : 6 });
+        const r = f.repeater ? 1.1 : 0.8 + 0.25 * Math.log10(Math.max(fl, 1));
+        ctx.fillStyle = f.repeater ? "rgba(226,196,212,0.75)" : "rgba(226,196,212,0.42)";
+        ctx.beginPath(); ctx.arc(x, y, r, 0, 2 * Math.PI); ctx.fill();
+        if (f.repeater) {
+          ctx.strokeStyle = "rgba(226,196,212,0.5)"; ctx.lineWidth = 0.8;
+          ctx.beginPath(); ctx.arc(x, y, 3.6, 0, 2 * Math.PI); ctx.stroke();
+        }
+        this.hit(x, y, 6, f.obj);
+        if (S.layers.labels && (f.repeater ? f.bursts * z * z > 900 : fl * z * z > 20000))
+          this.labels.add(f.name, x, y, { prio: f.repeater ? 4 + Math.log10(f.bursts) : 2 + Math.log10(fl), color: "rgba(226,196,212,0.6)", font: "10px var(--font)", gap: 6 });
       });
     }
   }

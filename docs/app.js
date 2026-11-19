@@ -20,7 +20,7 @@ const LAYERS = [
   ["nvss", "NVSS sources", true, "#b9a7ff"],
   ["snrs", "Supernova remnants", true, "#b6e58a"],
   ["pulsars", "Pulsars", true, "#7fdfff"],
-  ["frbs", "Fast radio bursts", true, "#ff6b7d"],
+  ["frbs", "Fast radio bursts", true, "#e2c4d4"],
   ["dumps", "Baseband dumps", true, "#ff86d8"],
   ["sunmoon", "Sun and Moon", true, "#ffe08a"],
   ["planets", "Planets", true, "#eed8b2"],
@@ -962,7 +962,7 @@ const STEPS = [
   ["Radio sees in daylight", "In the ground and dome views the stars fade during the day, but the radio sky does not: radio waves pass through the daylit atmosphere, and through clouds too. The Sun is still a very bright radio source, so the panel tells you when it crosses the strip."],
   ["Frequency is distance", "Hydrogen gas emits at 1420 MHz. The expansion of the universe stretches that line to lower frequencies, so each frequency in the band sees hydrogen at one distance and one time in the past. The band panel shows the redshift and the lookback time."],
   ["The array beam", "Set the beam to Array to see the 8 × 8 grid of dishes added together. The narrow peaks repeat across the sky (grating lobes) because the dishes are evenly spaced. Over a wide band each lobe spreads into a small rainbow, because each frequency puts it at a different place."],
-  ["Explore", "Select any object for its details, or search for it by name. Pulsars flash at their own period; the fastest show as a steady glow. A small × is a fast radio burst that CHIME, the telescope next door, caught once; a ringed × is a source that has burst again. Use the time controls to watch a day go by, or select a baseband dump to see where the dishes pointed when it was taken."],
+  ["Explore", "Select any object for its details, or search for it by name. Pulsars flash at their own period; the fastest show as a steady glow. A faint dot is a fast radio burst that CHIME, the telescope next door, caught once; a ringed dot is a source that has burst again. Use the time controls to watch a day go by, or select a baseband dump to see where the dishes pointed when it was taken."],
 ];
 function wireExplain() {
   let i = 0;
