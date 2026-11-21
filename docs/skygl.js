@@ -194,6 +194,15 @@ vec3 terrainAt(vec2 P) {
   // The real hills, with made-up gullies and bumps finer than their 30 m samples.
   h = mix(h, realH(P) + (eroded(P * 0.004 + 31.0, px * 0.004) - 0.33) * 45.0 + (fbm(P * 0.02 + 3.0, px * 0.02) - 0.5) * 8.0, real)
     + outcrop * (2.0 + 4.0 * fbm(P * 0.3 + 2.0, px * 0.3));
+  if (real > 0.0) {
+    // The real hills are benched and cut: bands of cliff along the contours
+    // where the rock crops out, and gullies between spurs.
+    float gl = 1.0 - abs(2.0 * fbm(P * 0.0045 + 41.0, px * 0.0045) - 1.0);
+    h -= real * 22.0 * gl * gl * gl * smoothstep(0.0, 60.0, h);
+    float st = 26.0, hs = h / st + 5.0 * fbm(P * 0.004 + 55.0, px * 0.004);
+    float bench = (floor(hs) + smoothstep(0.3, 0.7, fract(hs)) - hs) * st;
+    h += 0.65 * bench * real * smoothstep(0.42, 0.62, fbm(P * 0.0023 + 21.0, px * 0.0023)) * smoothstep(20.0, 80.0, h);
+  }
 
   vec2 q = abs(P - uArrayBox.xy) - uArrayBox.zw;
   float pad = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
@@ -675,7 +684,7 @@ vec3 coverOf(vec4 m, vec2 P, float lod) {
 
 // The air and the mist between the eye and p, t away, over colour c.
 vec3 aired(vec3 c, vec3 p, float t, vec2 hd) {
-  c = mix(c, hazeAt(hd), 1.0 - exp(-t / 5000.0));
+  c = mix(c, hazeAt(hd), 1.0 - exp(-t / 11000.0));
   return mix(c, mistColour(), mistTo(p, t));
 }
 
@@ -926,7 +935,7 @@ vec3 groundAt(vec3 e, float t, float pix) {
     straw = mix(straw, vec3(0.25, 0.26, 0.19) * (0.7 + 0.6 * fbm(P * 0.7 + 3.0, lod * 0.7)), sage * 0.75);
     straw *= 0.75 + 0.5 * fine;
     float tufts = fbm(P * 0.33 + 23.0, lod * 0.33);
-    straw *= mix((0.62 + 0.6 * smoothstep(0.35, 0.65, patches)) * (0.7 + 0.6 * smoothstep(0.3, 0.7, tufts)), 1.0, near);   // far off: tufts, and lighter and darker tracts
+    straw *= mix((0.52 + 0.6 * smoothstep(0.35, 0.65, patches)) * (0.7 + 0.6 * smoothstep(0.3, 0.7, tufts)), 1.0, near);   // far off: tufts, and lighter and darker tracts
     straw = mix(straw, vec3(0.33, 0.28, 0.21), smoothstep(0.6, 0.75, tufts) * 0.6 * (1.0 - near));     // and bare ground
     straw = mix(straw, straw * 1.35 + vec3(0.03, 0.03, 0.02), sheen * 0.6 * smoothstep(0.3, 0.9, f));   // gusts show the pale side
     vec3 soil = mix(vec3(0.33, 0.28, 0.21), straw * 0.7, smoothstep(0.45, 0.7, noise(Q * 19.0 + 7.0)) * near);   // soil and litter
@@ -947,6 +956,7 @@ vec3 groundAt(vec3 e, float t, float pix) {
       stone = mix(stone, vec3(0.40, 0.33, 0.11), smoothstep(0.70, 0.78, noise(P * 3.0 + 9.0)) * near * 0.7);   // lichen
       stone = mix(stone, vec3(0.30, 0.36, 0.30), smoothstep(0.74, 0.80, noise(P * 4.1 + 31.0)) * near * 0.5);
       stone *= 1.0 - 0.6 * smoothstep(0.9, 0.98, crack) * near;
+      stone *= mix(vec3(0.72, 0.62, 0.52), vec3(1.0), near);     // far off, weathered brown faces
       alb = mix(alb, stone, smoothstep(0.25, 0.6, rock));
       ao = mix(ao, 0.75 + 0.25 * beds, smoothstep(0.25, 0.6, rock));
       n = normalize(n + vec3(fbm(P * 1.1 + 2.0, lod * 1.1) - 0.5, fbm(P * 1.1 + 7.0, lod * 1.1) - 0.5, 0.0) * 1.1 * rock * near);
