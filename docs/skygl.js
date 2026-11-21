@@ -93,7 +93,21 @@ vec3 cells(vec2 p, out vec2 off) {
 // 1 for a pine or 0 for a fir), in metres.
 vec3 treeOf(vec4 t) {
   float ht = 7.0 + 15.0 * t.a * t.a, pine = step(fract(t.a * 13.0), 0.4);
-  return vec3(ht, ht * (0.16 + 0.12 * fract(t.a * 7.0)) * (1.0 + 0.15 * pine), pine);
+  return vec3(ht, min(ht * (0.16 + 0.12 * fract(t.a * 7.0)) * (1.0 + 0.15 * pine), 3.4), pine);
+}
+
+// Whether the tree of cell g (its random numbers t) gives way to a taller
+// one that it would overlap.  Trees then stand apart (two cells are 7 m
+// and an outline is at most 3.4 m), and a site inside another tree's
+// outline is never a tree itself.
+bool crowded(vec2 g, vec4 t) {
+  float rad = treeOf(t).y;
+  for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++) {
+    vec2 o = vec2(float(i), float(j));
+    vec4 u = texture2D(uNoise, (g + o + 0.5) / 256.0);
+    if (u.a > t.a && length(o + u.gb - t.gb) * 7.0 < rad + treeOf(u).y) return true;
+  }
+  return false;
 }
 
 // 1 below a, 0 above b (a < b), smooth between.
@@ -154,7 +168,7 @@ float treesAt(vec2 S) {
   if (real > 0.0) {
     float north = (demSmooth(S - vec2(0.0, 45.0)) - demSmooth(S + vec2(0.0, 45.0))) / 90.0;   // the slope down to the north
     float up = demSmooth(S) - demSmooth(vec2(0.0));
-    p = mix(p, (0.55 * smoothstep(0.05, 0.3, north) + 0.3 * smoothstep(150.0, 600.0, up)) * (0.4 + 1.2 * sw), real);
+    p = mix(p, (0.07 + 0.55 * smoothstep(0.05, 0.3, north) + 0.3 * smoothstep(150.0, 600.0, up)) * (0.4 + 1.2 * sw), real);
   }
   return clamp(p, 0.0, 1.0);
 }
@@ -229,7 +243,7 @@ vec3 terrainAt(vec2 P) {
       vec2 S = (g + t.gb) * 7.0;
       vec2 sq = abs(S - uArrayBox.xy) - uArrayBox.zw;
       float open = step(55.0, length(S)) * step(34.0, max(sq.x, sq.y)) * step(52.0, segDist(S, vec2(0.0), uArrayBox.xy));
-      if (t.r < treesAt(S) * open) {
+      if (t.r < treesAt(S) * open && !(r < 800.0 && crowded(g, t))) {
         // In the map a tree is only its outline, a cone or a dome; close by
         // the sky shader traces the tree inside it (treeTrace).
         vec3 T = treeOf(t);
@@ -237,6 +251,7 @@ vec3 terrainAt(vec2 P) {
         if (px > 0.5) rad = max(rad * 1.25, 2.4);              // far off, stout enough for the map
         float d = length(P - S), x = d / rad;
         float c = T.z > 0.5 ? ht * pow(max(1.0 - x * x, 0.0), 0.35) : ht * max(1.0 - x, 0.0);
+        if (px > 0.5) c = ht * pow(max(1.0 - x, 0.0), 0.75) * (0.7 + 0.6 * noise(P * 0.45 + S * 0.37));   // far off, a ragged spire
         crown = max(crown, c);
         edge = min(edge, d - rad);
       }
@@ -556,7 +571,7 @@ vec3 hillsAt(vec3 e, float alt, float hz, float pix) {
 
 // ---- the made-up terrain, ray-marched through its height maps
 
-const float GRASS = 0.45;                // the tallest bunchgrass (m)
+const float GRASS = 0.36;                // the tallest bunchgrass (m)
 
 // The terrain's maps (built once from terrainAt; skygl.js) around the
 // observer, as stored: (height high byte, low byte, tall, cover).
@@ -642,7 +657,7 @@ float dishShade(vec2 P) {
 
 // The bunchgrass standing at Q (m): its height, 0..1 of GRASS.
 float grassH(vec2 Q) {
-  float bunch = smoothstep(0.09, 0.44, noise(Q * 6.0));
+  float bunch = smoothstep(0.17, 0.5, noise(Q * 6.0));
   return bunch * (0.3 + 0.7 * noise(mat2(0.8, 0.6, -0.6, 0.8) * Q * 41.0));
 }
 
@@ -651,7 +666,8 @@ vec3 coverOf(vec4 m, vec2 P, float lod) {
   float woody = clamp(2.0 * m.a - 1.0, 0.0, 1.0);
   if (length(P) >= 750.0) {                                 // far off: the share of trees, painted as dots
     float dots = fbm(P * 0.09 + 5.0, lod * 0.09) * 0.5 + noise(P * 0.021) * 0.5;
-    return vec3(clamp(1.0 - 2.0 * m.a, 0.0, 1.0), 0.0, smoothstep(-0.06, 0.06, woody - dots));
+    float lone = fbm(P * 0.13 + 9.0, lod * 0.13);                // single trees, where few stand
+    return vec3(clamp(1.0 - 2.0 * m.a, 0.0, 1.0), 0.0, max(smoothstep(-0.06, 0.06, woody - dots), smoothstep(-0.03, 0.03, lone - 0.74 + 0.5 * woody) * step(0.01, woody)));
   }
   float tree = smoothstep(0.6, 0.85, woody);
   return vec3(clamp(1.0 - 2.0 * m.a, 0.0, 1.0), smoothstep(0.1, 0.35, woody) * (1.0 - tree), tree);
@@ -674,7 +690,7 @@ bool treeNear(vec2 P, out vec2 S, out vec3 T) {
     vec2 s = (g + t.gb) * 7.0;
     vec3 tr = treeOf(t);
     float x = length(P - s) / tr.y;
-    if (x < best && mapTexel(s).a > 0.9) { best = x; S = s; T = tr; found = true; }
+    if (x < best && mapTexel(s).a > 0.9 && !crowded(g, t)) { best = x; S = s; T = tr; found = true; }
   }
   return found;
 }
@@ -800,7 +816,7 @@ vec3 groundAt(vec3 e, float t, float pix) {
     float slope = 1.0 - n.z;
     vec3 cov = coverOf(m, P, lod);
     float woody = max(cov.y, cov.z);
-    float rock = clamp(max(cov.x * 1.6, smoothstep(0.28, 0.5, slope)) * (1.0 - smoothstep(0.0, 0.2, woody)), 0.0, 1.0);
+    float rock = clamp(max(cov.x * 1.6, smoothstep(mix(0.13, 0.28, near), mix(0.3, 0.5, near), slope)) * (1.0 - smoothstep(0.0, 0.2, woody)), 0.0, 1.0);
     vec2 pq = abs(P - uArrayBox.xy) - uArrayBox.zw + 2.0;
     float onPad = 1.0 - smoothstep(-0.5, 0.5, max(pq.x, pq.y));
     float grassy = (1.0 - rock) * (1.0 - onPad) * (1.0 - woody);
@@ -903,14 +919,17 @@ vec3 groundAt(vec3 e, float t, float pix) {
     float fine = mix(0.5, noise(Q * 31.0), clamp(1.5 - lod * 60.0, 0.0, 1.0));
     float tex = fbm(Q * 1.7 + 5.0, lod * 1.7);
     float patches = fbm(P * 0.025 + 1.0, lod * 0.025);
-    vec3 straw = mix(vec3(0.52, 0.42, 0.21), vec3(0.36, 0.25, 0.12), smoothstep(0.3, 0.7, tex));   // cured blades, pale to russet
-    straw = mix(straw, vec3(0.19, 0.24, 0.09), clamp((patches - 0.55) * 1.5, 0.0, 0.85));   // greener patches
+    vec3 straw = mix(vec3(0.56, 0.47, 0.27), vec3(0.39, 0.29, 0.15), smoothstep(0.3, 0.7, tex));   // cured blades, pale to russet
+    straw = mix(straw, vec3(0.19, 0.24, 0.09), clamp((patches - 0.55) * 1.5, 0.0, 0.4));   // greener patches
     // Sage on the slopes, far off: grey-green in mottled patches.
     float sage = smoothstep(0.45, 0.62, fbm(P * 0.04 + 13.0, lod * 0.04)) * smoothstep(0.02, 0.10, slope) * (1.0 - near);
     straw = mix(straw, vec3(0.25, 0.26, 0.19) * (0.7 + 0.6 * fbm(P * 0.7 + 3.0, lod * 0.7)), sage * 0.75);
     straw *= 0.75 + 0.5 * fine;
+    float tufts = fbm(P * 0.33 + 23.0, lod * 0.33);
+    straw *= mix((0.62 + 0.6 * smoothstep(0.35, 0.65, patches)) * (0.7 + 0.6 * smoothstep(0.3, 0.7, tufts)), 1.0, near);   // far off: tufts, and lighter and darker tracts
+    straw = mix(straw, vec3(0.33, 0.28, 0.21), smoothstep(0.6, 0.75, tufts) * 0.6 * (1.0 - near));     // and bare ground
     straw = mix(straw, straw * 1.35 + vec3(0.03, 0.03, 0.02), sheen * 0.6 * smoothstep(0.3, 0.9, f));   // gusts show the pale side
-    vec3 soil = mix(vec3(0.21, 0.165, 0.11), straw * 0.62, smoothstep(0.45, 0.7, noise(Q * 19.0 + 7.0)) * near);   // soil and litter
+    vec3 soil = mix(vec3(0.33, 0.28, 0.21), straw * 0.7, smoothstep(0.45, 0.7, noise(Q * 19.0 + 7.0)) * near);   // soil and litter
     vec3 alb = mix(soil, straw, smoothstep(0.0, 0.2, f));
     float ao = 0.58 + 0.42 * smoothstep(0.0, 0.7, f);
     if (fl > 0.9) {
@@ -954,11 +973,11 @@ vec3 groundAt(vec3 e, float t, float pix) {
       vec3 deep = mix(vec3(0.016, 0.034, 0.028), vec3(0.03, 0.04, 0.02), kind);
       vec3 tip = mix(vec3(0.06, 0.12, 0.075), vec3(0.11, 0.14, 0.06), kind);
       vec3 tree = mix(deep, tip, smoothstep(0.3, 0.75, spray * 0.6 + needles * 0.4) * smoothstep(0.5, 1.05, cavity));
-      alb = mix(alb, tree, cov.z);
+      alb = mix(alb, tree * (0.5 + 0.5 * near), cov.z);                     // far stands read dark
       ao = mix(ao, 0.35 + 0.65 * smoothstep(0.45, 1.05, cavity), cov.z);
       n = normalize(mix(n, n + vec3(spray - 0.5, needles - 0.5, 0.0) * 1.2 * near, cov.z));
     }
-    ao *= mix(1.0, min(cavity, 1.0), (1.0 - cov.z) * step(0.5, max(woody, rock)));   // hollows in brush and rock
+    ao *= mix(1.0, min(cavity, 1.0), (1.0 - cov.z) * max(step(0.5, max(woody, rock)), 1.0 - near));   // hollows in brush and rock
     float sun = sunPast(p + n * (0.3 + 0.004 * t) + vec3(0.0, 0.0, GRASS * k * f)) * shade * lit;
     if (onPad > 0.0 || length(P - uArrayBox.xy) < 90.0) sun *= dishShade(P);
     c = litS(alb, n, sun, ao * (0.75 + 0.25 * n.z));
