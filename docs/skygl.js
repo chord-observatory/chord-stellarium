@@ -35,14 +35,16 @@ const glf = (x) => Number(x).toFixed(4);
 const SKYLINE = `
 // The terrain skyline's altitude (deg) at azimuth azDeg, linear between
 // samples.  The texture is NEAREST; the interpolation is here so the
-// 16-bit altitude is decoded before it is mixed.
-float skyline(float azDeg) {
+// 16-bit altitude is decoded before it is mixed.  far: 1 where the terrain
+// that sets the skyline lies beyond the height maps, 0 within them.
+float skyline(float azDeg, out float far) {
   float x = mod(azDeg, 360.0) / 360.0 * uHzN;
   float i0 = floor(x), f = x - i0, i1 = mod(i0 + 1.0, uHzN);
   vec4 a = texture2D(uHz, vec2((i0 + 0.5) / uHzN, 0.5));
   vec4 b = texture2D(uHz, vec2((i1 + 0.5) / uHzN, 0.5));
   float ha = (a.r * 65280.0 + a.g * 255.0) / 65535.0 * ${HZ_SPAN} + ${HZ_MIN};
   float hb = (b.r * 65280.0 + b.g * 255.0) / 65535.0 * ${HZ_SPAN} + ${HZ_MIN};
+  far = mix(a.b, b.b, f);
   return mix(ha, hb, f);
 }
 `;
@@ -245,7 +247,7 @@ vec3 terrainAt(vec2 P) {
   // Firs.
   {
     vec2 g0 = floor(P / 7.0);
-    float crown = 0.0, edge = 9.0;
+    float crown = 0.0, edge = 9.0, leafy = 9.0;
     for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++) {
       vec2 g = g0 + vec2(float(i), float(j));
       vec4 t = texture2D(uNoise, (g + 0.5) / 256.0);
@@ -266,11 +268,12 @@ vec3 terrainAt(vec2 P) {
         if (px > 0.5) c = ht * pow(max(1.0 - x, 0.0), 0.75) * (0.7 + 0.6 * noise(P * 0.45 + S * 0.37));   // far off, a ragged spire
         crown = max(crown, c);
         edge = min(edge, d - rad);
+        leafy = min(leafy, length(S) < 240.0 ? d - rad + 0.9 : d - rad);   // a traced tree's needles: inside the outline
       }
     }
     if (px < 2.0 && r < 750.0) {
       h += crown;
-      woody = max(woody, px < 0.5 ? under(-0.6, -0.3, edge) : under(px, 2.0 * px + 0.3, edge));   // near, the grass grows up to the outline (and its texels' blur stays inside)
+      woody = max(woody, px < 0.5 ? under(0.3, 0.6, leafy) : under(px, 2.0 * px + 0.3, edge));   // near, the grass grows up to a traced outline (and its texels' blur stays inside)
       tall = max(clamp(1.0 - edge / 6.0, 0.0, 1.0), 0.03 * step(0.001, treesAt(P) + treesAt(P + 12.0) + treesAt(P - 12.0)) * step(35.0, r));
     } else woody = treesAt(P) * 1.6;                           // beyond 750 m the map only knows how many
   }
@@ -321,7 +324,7 @@ uniform float uSkyGain;
 uniform float uDome;        // 1 in the ground and dome views, 0 in charts
 uniform float uGround;      // the Horizon layer: the ground is opaque (ground, dome) or the
                             // sky below the skyline dimmed (charts); off, the sky shows through
-uniform sampler2D uHz;      // skyline: per azimuth step, altitude in 16 bits (R, G)
+uniform sampler2D uHz;      // skyline: per azimuth step, altitude in 16 bits (R, G), beyond the maps (B)
 uniform float uHzN;
 uniform vec3 uBore;         // beam centre, ENU
 uniform int uBeamMode;      // 0 off, 1 primary, 2 array
@@ -615,7 +618,7 @@ float hitGround(vec3 ro, vec3 rd, float t0, float tMax) {
   float t = t0 + 0.2, tPrev = t0;
   float climb = rd.z / max(length(rd.xy), 1e-4);
   float d = 9.0;
-  for (int i = 0; i < 256; i++) {
+  for (int i = 0; i < 400; i++) {
     vec3 p = ro + rd * t;
     vec4 m = mapTexel(p.xy);
     d = p.z - heightOf(m);
@@ -1096,7 +1099,8 @@ void main() {
 
   vec3 col = radioAt(v);
   float alt = asin(clamp(e.z, -1.0, 1.0)) / DEG;
-  float hz = skyline(atan(e.x, e.y) / DEG);
+  float far;
+  float hz = skyline(atan(e.x, e.y) / DEG, far);
   bool below = alt < hz;
   float tLand = -1.0;
   vec3 tree;
@@ -1114,6 +1118,9 @@ void main() {
       if (kind < 1.5) { onTree = true; break; }
       t0 = tOut;
     }
+    // Where the maps hold the terrain that sets the skyline, a ray that
+    // misses it is in the sky.
+    if (far < 0.5) below = false;
   }
   if (uDome > 0.5 && uLand > 0.5 && (!below || uGround < 0.5) && tLand < 0.0) {
     vec3 sky = skyAt(e);
@@ -1193,7 +1200,9 @@ export class SkyGL {
     return 1 - 0.8 * t * t * (3 - 2 * t);
   }
 
-  /** horizon: { alt: skyline altitude (deg) per azimuth step, from north through east } */
+  /** horizon: { alt: skyline altitude (deg) per azimuth step, from north
+   *  through east; dist: distance (km) to the terrain that sets it, or
+   *  null: all beyond the maps } */
   constructor(canvas, image, horizon) {
     const gl = canvas.getContext("webgl", { antialias: false, premultipliedAlpha: false, preserveDrawingBuffer: true });
     if (!gl) throw new Error("WebGL is not available");
@@ -1221,7 +1230,8 @@ export class SkyGL {
     const hn = horizon.alt.length, px = new Uint8Array(4 * hn);
     for (let i = 0; i < hn; i++) {
       const v = Math.round(Math.max(0, Math.min(1, (horizon.alt[i] - Number(HZ_MIN)) / Number(HZ_SPAN))) * 65535);
-      px.set([v >> 8, v & 255, 0, 255], 4 * i);
+      const az = (i / hn) * 2 * Math.PI, edge = (MAPS[3] * 0.98) / Math.max(Math.abs(Math.sin(az)), Math.abs(Math.cos(az)));
+      px.set([v >> 8, v & 255, !horizon.dist || horizon.dist[i] * 1000 > edge ? 255 : 0, 255], 4 * i);
     }
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());

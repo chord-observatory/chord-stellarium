@@ -1038,7 +1038,7 @@ async function main() {
   st.band = site.default_band_mhz.slice();
   readHash();
   resize();
-  try { gl = new SkyGL($("sky"), img, { alt: horizon.alt_deg }); } catch (err) { fail(`This page needs WebGL. ${err.message}`); return; }
+  try { gl = new SkyGL($("sky"), img, { alt: horizon.alt_deg, dist: horizon.flat ? null : horizon.dist_km }); } catch (err) { fail(`This page needs WebGL. ${err.message}`); return; }
   overlay = new Overlay($("ov"));
   trace = new Trace($("trace"), img, skyMeta);
   wireControls();
