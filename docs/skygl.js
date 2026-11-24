@@ -259,7 +259,10 @@ vec3 terrainAt(vec2 P) {
         float ht = T.x, rad = T.y;
         if (px > 0.5) rad = max(rad * 1.25, 2.4);              // far off, stout enough for the map
         float d = length(P - S), x = d / rad;
-        float c = T.z > 0.5 ? ht * pow(max(1.0 - x * x, 0.0), 0.35) : ht * max(1.0 - x, 0.0);
+        // A pine traced inside it (within 240 m) has a flat-topped outline,
+        // room for its crown; beyond, the outline is all there is: a dome.
+        float c = T.z < 0.5 ? ht * max(1.0 - x, 0.0)
+                : ht * (length(S) < 240.0 ? pow(max(1.0 - x * x * x * x, 0.0), 0.25) : pow(max(1.0 - x * x, 0.0), 0.35));
         if (px > 0.5) c = ht * pow(max(1.0 - x, 0.0), 0.75) * (0.7 + 0.6 * noise(P * 0.45 + S * 0.37));   // far off, a ragged spire
         crown = max(crown, c);
         edge = min(edge, d - rad);
@@ -267,7 +270,7 @@ vec3 terrainAt(vec2 P) {
     }
     if (px < 2.0 && r < 750.0) {
       h += crown;
-      woody = max(woody, under(px, 2.0 * px + 0.3, edge));
+      woody = max(woody, px < 0.5 ? under(-0.6, -0.3, edge) : under(px, 2.0 * px + 0.3, edge));   // near, the grass grows up to the outline (and its texels' blur stays inside)
       tall = max(clamp(1.0 - edge / 6.0, 0.0, 1.0), 0.03 * step(0.001, treesAt(P) + treesAt(P + 12.0) + treesAt(P - 12.0)) * step(35.0, r));
     } else woody = treesAt(P) * 1.6;                           // beyond 750 m the map only knows how many
   }
@@ -636,20 +639,6 @@ float hitGround(vec3 ro, vec3 rd, float t0, float tMax) {
   return d < 12.0 ? t : -1.0;
 }
 
-// Sunlight reaching p past the terrain, softened (0 .. 1).
-float sunPast(vec3 p) {
-  if (uSun.z < -0.03) return 0.0;
-  float res = 1.0, t = 0.5;
-  for (int i = 0; i < 30; i++) {
-    vec3 q = p + uSun * t;
-    float d = q.z - mapH(q.xy);
-    res = min(res, 6.0 * d / t);
-    if (res < 0.0 || q.z > 45.0 + 0.2 * length(q.xy)) break;
-    t += max(0.9, 0.13 * t);
-  }
-  return clamp(res, 0.0, 1.0) * uSunOverHills;
-}
-
 // Sunlight the cumulus lets through to the ground at P (m).
 float cloudShade(vec2 P) {
   if (uSun.z < 0.02) return 1.0;
@@ -688,10 +677,50 @@ vec3 aired(vec3 c, vec3 p, float t, vec2 hd) {
   return mix(c, mistColour(), mistTo(p, t));
 }
 
-// The tree whose outline in the map holds P: its site and treeOf.
+// The height of a traced tree's outline in the maps (terrainAt's) x of its
+// radii from the trunk.  T: treeOf.
+float outlineOf(float x, vec3 T) {
+  return T.x * (T.z < 0.5 ? max(1.0 - x, 0.0) : pow(max(1.0 - x * x * x * x, 0.0), 0.25));
+}
+// The ground at P, by the tree at S (T: treeOf; T.x = 0 for none) whose
+// outline the map adds to it there.  Where the outline drops steeply to the
+// ground (a pine's edge, a fir's foot) the texels blur it, so the ground is
+// read just outside, unless that is at another tree's outline.
+float groundH(vec2 P, vec2 S, vec3 T) {
+  if (T.x <= 0.0) return mapH(P);
+  vec2 D = P - S;
+  float x = length(D) / T.y, xo = 1.0 + 2.0 * mapEps(P) / T.y, inside = mapH(P) - outlineOf(x, T);
+  float lo = T.z > 0.5 ? 0.8 : 2.0 - xo;
+  if (x < xo && x > lo) {
+    vec4 mo = mapTexel(S + D * (xo / x));
+    float outer = mo.b > 0.97 ? min(heightOf(mo), inside) : heightOf(mo);
+    return mix(inside, outer, smoothstep(lo, lo + 0.08, x));
+  }
+  return inside;
+}
+
+// The grassland's colour at P, Q where the ray meets the blades, for lod
+// metres per pixel; near: 1 where the blades stand in relief, slope: 1 -
+// the normal's z, fine: the finest grain (0..1).
+vec3 strawAt(vec2 P, vec2 Q, float lod, float near, float slope, float fine) {
+  float tex = fbm(Q * 1.7 + 5.0, lod * 1.7);
+  float patches = fbm(P * 0.025 + 1.0, lod * 0.025);
+  vec3 straw = mix(vec3(0.56, 0.47, 0.27), vec3(0.39, 0.29, 0.15), smoothstep(0.3, 0.7, tex));   // cured blades, pale to russet
+  straw = mix(straw, vec3(0.19, 0.24, 0.09), clamp((patches - 0.55) * 1.5, 0.0, 0.4));   // greener patches
+  // Sage on the slopes, far off: grey-green in mottled patches.
+  float sage = smoothstep(0.45, 0.62, fbm(P * 0.04 + 13.0, lod * 0.04)) * smoothstep(0.02, 0.10, slope) * (1.0 - near);
+  straw = mix(straw, vec3(0.25, 0.26, 0.19) * (0.7 + 0.6 * fbm(P * 0.7 + 3.0, lod * 0.7)), sage * 0.75);
+  straw *= 0.75 + 0.5 * fine;
+  float tufts = fbm(P * 0.33 + 23.0, lod * 0.33);
+  straw *= mix((0.52 + 0.6 * smoothstep(0.35, 0.65, patches)) * (0.7 + 0.6 * smoothstep(0.3, 0.7, tufts)), 1.0, near);   // far off: tufts, and lighter and darker tracts
+  return mix(straw, vec3(0.33, 0.28, 0.21), smoothstep(0.6, 0.75, tufts) * 0.6 * (1.0 - near));     // and bare ground
+}
+
+// The tree whose outline in the map holds P, or is nearest within 2.5 of
+// its radii: its site and treeOf.
 bool treeNear(vec2 P, out vec2 S, out vec3 T) {
   vec2 g0 = floor(P / 7.0);
-  float best = 1.25;
+  float best = 2.5;
   bool found = false;
   for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++) {
     vec2 g = g0 + vec2(float(i), float(j));
@@ -704,36 +733,80 @@ bool treeNear(vec2 P, out vec2 S, out vec3 T) {
   return found;
 }
 
+float segDist3(vec3 p, vec3 a, vec3 b) {
+  vec3 pa = p - a, ba = b - a;
+  return length(pa - ba * clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0));
+}
+
 // Roughly the distance from q to a tree (never more than the true one); q
-// is from the foot of the trunk.  T: treeOf.  bark: 1 where the trunk is
-// nearer than the needles.  A fir is tiers of boughs, each widest at its
-// foot and drooping to a ragged edge; a pine is a tall trunk under clumps.
+// is from the foot of the trunk.  T: treeOf.  bark: 1 where the trunk or a
+// limb is nearer than the needles.  A fir (Douglas fir) is tiers of
+// boughs, uneven and tilted, each widest at its foot and drooping to a
+// ragged edge, with here and there a bough missing.  A pine (ponderosa) is
+// a tall bare trunk under a crown of needle tufts at the ends of upswept
+// limbs, with sky between them.
 float treeSdf(vec3 q, vec3 T, float seed, out float bark) {
   float ht = T.x, rad = T.y, r = length(q.xy), z = q.z / ht;
   float th = atan(q.y, q.x), bole, leaf;
+  vec2 dir = q.xy / max(r, 0.001);                          // for noise round the trunk without a seam
   if (T.z < 0.5) {
     bole = max(r - 0.03 * ht * (1.0 - 0.8 * z) - 0.04, q.z - 0.93 * ht);
     float n = clamp(floor(ht / 1.25), 4.0, 11.0);
-    float zz = (z - 0.1) / 0.9;
+    float zz = (z - 0.1) / 0.9 + (noise(dir * 1.6 + vec2(seed * 13.0, z * 3.0)) - 0.5) * 0.6 / n;
     float k = floor(zz * n), f = zz * n - k;
-    float reach = rad * 0.98 * 0.9 * (1.0 - k / n) * (1.0 - 0.72 * f);
+    float reach = rad * 0.82 * (1.0 - k / n) * (1.0 - 0.55 * f) * (0.85 + 0.2 * fract(sin(k * 12.9898 + seed * 78.233) * 43758.5453));
     reach *= 0.78 + 0.22 * sin(th * (5.0 + mod(k, 3.0)) + k * 2.3 + seed * 31.0);
-    reach *= 0.72 + 0.28 * noise(vec2(th * 2.5 + k * 7.0 + seed * 9.0, q.z * 1.7));
-    leaf = zz < 0.0 ? 9.0 : zz > 1.0 ? q.z - ht : (r - reach) * 0.7;
+    reach *= 0.45 + 0.55 * smoothstep(0.2, 0.55, noise(dir * 2.4 + vec2(k * 7.0 + seed * 9.0, q.z * 1.7)));
+    leaf = zz < 0.0 ? 9.0 : zz > 1.0 ? q.z - ht : (r - reach) * 0.55;
   } else {
-    bole = max(r - 0.04 * ht * (1.0 - 0.6 * z) - 0.05, q.z - 0.8 * ht);
-    vec3 c = vec3(0.0, 0.0, 0.72 * ht);
-    leaf = (length((q - c) / vec3(0.62 * rad, 0.62 * rad, 0.26 * ht)) - 1.0) * 0.55 * rad;
-    for (int i = 0; i < 3; i++) {
-      float a = seed * 6.28 + float(i) * 2.1;
-      c = vec3(cos(a) * 0.38 * rad, sin(a) * 0.38 * rad, (0.48 + 0.08 * float(i)) * ht);
-      leaf = min(leaf, (length((q - c) / vec3(0.4 * rad, 0.4 * rad, 0.13 * ht)) - 1.0) * 0.36 * rad);
+    bole = max(r - 0.035 * ht * (1.0 - 0.6 * z) - 0.05, q.z - 0.9 * ht);
+    float cb = (0.45 + 0.13 * fract(seed * 7.3)) * ht;      // where the crown starts
+    leaf = max(r - rad, cb - 0.5 * rad - q.z);               // away from the crown, its bound will do
+    if (leaf < 0.6) {
+      leaf = 9.0;
+      for (int i = 0; i < 9; i++) {
+        float u = (float(i) + 0.5) / 9.0, a = seed * 40.0 + float(i) * 2.39996;
+        float zi = mix(cb, 0.86 * ht, u) + (fract(seed * 17.0 + float(i) * 0.371) - 0.5) * 0.07 * ht;
+        float s = rad * (0.24 + 0.1 * fract(seed * 5.0 + float(i) * 0.29)) * (1.15 - 0.35 * u);
+        float top = min((zi + 0.15 * rad + 0.65 * s) / ht, 1.0);
+        float ri = max(rad * sqrt(sqrt(1.0 - top * top * top * top)) - 1.05 * s, 0.1 * rad) * (0.7 + 0.3 * fract(seed * 23.0 + float(i) * 0.613));
+        vec3 tip = vec3(cos(a) * ri, sin(a) * ri, zi + 0.25 * ri);
+        bole = min(bole, segDist3(q, vec3(0.0, 0.0, zi - 0.25 * ri), tip) - 0.03 - 0.006 * ht * (1.0 - u));
+        leaf = min(leaf, (length((q - tip) / vec3(s, s, 0.65 * s)) - 1.0) * 0.65 * s);
+      }
+      leaf = min(leaf, (length((q - vec3(0.0, 0.0, 0.9 * ht)) / vec3(0.3 * rad, 0.3 * rad, 0.09 * ht)) - 1.0) * 0.3 * rad);
+      float tuft = noise(q.xy * 2.6 + vec2(q.z * 2.1, seed * 40.0)) + 0.5 * noise(vec2(q.x - q.y, q.z) * 6.3 + 9.0);
+      leaf = (leaf + (tuft - 0.75) * 0.22 * rad) * 0.7;
     }
-    float lump = noise(q.xy * 1.6 + vec2(q.z * 1.3, seed * 40.0)) + noise(vec2(q.x - q.y, q.z * 1.5) * 1.4 + 9.0);
-    leaf = (leaf + (lump - 1.0) * 0.28 * rad) * 0.7;
   }
   bark = step(bole, leaf);
   return min(bole, leaf);
+}
+
+// Sunlight reaching p past the terrain, softened (0 .. 1).  Within 240 m
+// a tree's outline in the map is only its bound: inside it the tree itself
+// casts the shadow, with light through its gaps.
+float sunPast(vec3 p) {
+  if (uSun.z < -0.03) return 0.0;
+  float res = 1.0, t = 0.5, base = 0.0, seed = 0.0, b;
+  vec2 S = vec2(1e5);
+  vec3 T = vec3(0.0);
+  for (int i = 0; i < 30; i++) {
+    vec3 q = p + uSun * t;
+    vec4 m = mapTexel(q.xy);
+    float d = q.z - heightOf(m);
+    if (d < 0.0 && m.b > 0.95 && dot(q.xy, q.xy) < 57600.0) {
+      if (length(q.xy - S) > 1.25 * T.y) {
+        if (treeNear(q.xy, S, T) && dot(S, S) < 57600.0) { base = mapH(S) - T.x; seed = fract(S.x * 0.137 + S.y * 0.291); }
+        else { S = vec2(1e5); T = vec3(0.0); }
+      }
+      if (T.x > 0.0) d = treeSdf(q - vec3(S, base), T, seed, b);
+    }
+    res = min(res, 6.0 * d / t);
+    if (res < 0.0 || q.z > 45.0 + 0.2 * length(q.xy)) break;
+    t += max(0.9, 0.13 * t);
+  }
+  return clamp(res, 0.0, 1.0) * uSunOverHills;
 }
 
 // A near tree, traced inside its outline, which the ray meets at t0.
@@ -743,31 +816,50 @@ float treeTrace(vec3 ro, vec3 rd, float t0, float pix, out vec3 col, out float t
   vec3 p0 = ro + rd * t0;
   col = vec3(0.0);
   tOut = t0;
-  if (t0 > 235.0 || mapEps(p0.xy) > 0.3 || mapTexel(p0.xy).a < 0.8) return 0.0;
+  if (t0 > 245.0 || mapEps(p0.xy) > 0.3 || mapTexel(p0.xy).b < 0.9) return 0.0;
   vec2 S;
   vec3 T;
-  if (!treeNear(p0.xy, S, T)) return 0.0;
+  if (!treeNear(p0.xy, S, T) || dot(S, S) > 57600.0) return 0.0;
   float base = mapH(S) - T.x, seed = fract(S.x * 0.137 + S.y * 0.291);
   // The wind rocks the top.
   vec2 sway = uWind * 0.012 * T.x * sin(uTime * 1.3 + seed * 20.0) * (0.5 + 0.5 * sin(uTime * 0.31 + seed * 7.0));
-  float t = t0 - 0.15, tEnd = t0 + 2.6 * T.y / max(length(rd.xy), 0.3) + 1.0, bark, d = 1.0;
+  float t = t0 - 0.15, tEnd = t0 + 2.6 * T.y / max(length(rd.xy), 0.3) + 1.0, bark, d = 1.0, above = 1.0;
   vec3 q;
   bool hit = false;
   for (int i = 0; i < 56; i++) {
-    q = ro + rd * t - vec3(S, base);
+    vec3 w = ro + rd * t;
+    q = w - vec3(S, base);
+    float x = length(q.xy) / T.y;
+    // The ground (in and about the outline the map holds it plus the outline).
+    if (q.z < 3.0) {
+      above = w.z - groundH(w.xy, S, T);
+      if (above < 0.0) { t += max(above / max(-rd.z, 0.05), -0.4); break; }
+    }
+    // Out of the outline and going away (or out of steps: beside the trunk
+    // they are short): on to what is behind, from where the ray leaves the
+    // circle of the outline and its blur in the map (a ray along its side
+    // would meet it again), not past the ground.
+    float rOut = T.y + 2.0 * mapEps(w.xy), aa = max(dot(rd.xy, rd.xy), 1e-6), bb = dot(q.xy, rd.xy);
+    float ahead = max((-bb + sqrt(max(bb * bb - aa * (dot(q.xy, q.xy) - rOut * rOut), 0.0))) / aa, 0.3);
+    if (q.z < 3.0) ahead = clamp(above / max(-rd.z, 0.01) - 0.05, 0.0, ahead);
+    if ((dot(q.xy, rd.xy) > 0.0 && (x > 1.05 || q.z > 0.3 + outlineOf(x, T))) || i == 55) { tOut = t + ahead; return 2.0; }
     q.xy -= sway * (q.z / T.x) * (q.z / T.x);
-    if (q.z < -0.2) break;
     d = treeSdf(q, T, seed, bark);
     if (d < 0.6 * t * pix + 0.01) { hit = true; break; }
     t += clamp(d, 0.03, 0.4);
-    if (t > tEnd || (length(q.xy) > T.y * 1.3 && dot(q.xy, rd.xy) > 0.0)) { tOut = t + 0.3; return 2.0; }
+    if (t > tEnd) { tOut = t + ahead; return 2.0; }
   }
   vec3 p = ro + rd * t;
   vec2 hd = length(rd.xy) > 1e-5 ? normalize(rd.xy) : vec2(0.0, 1.0);
   float shade = sunPast(vec3(S, base + T.x + 0.5)) * cloudShade(S);
   if (!hit) {
-    // The ground under the tree: needles and shade.
-    col = aired(litS(vec3(0.30, 0.24, 0.13) * (0.6 + 0.6 * noise(p.xy * 5.0)), vec3(0.0, 0.0, 1.0), 0.3 * shade, 0.7), p, t, hd);
+    // The ground under the tree: the grassland (as groundAt has it there),
+    // giving way to the tree's needles toward the trunk, in its own shade.
+    float lod = t * pix / max(-rd.z, 0.15), fine = mix(0.5, noise(p.xy * 31.0), clamp(1.5 - lod * 60.0, 0.0, 1.0));
+    float x = length(p.xy - S) / T.y + 0.4 * (noise(p.xy * 1.3 + seed * 50.0) - 0.5);
+    vec3 alb = mix(vec3(0.22, 0.14, 0.075) * (0.75 + 0.5 * fine), strawAt(p.xy, p.xy, lod, clamp(1.5 - lod * 2.5, 0.0, 1.0), 0.0, fine), smoothstep(0.35, 1.0, x));
+    float sun = sunPast(p + vec3(0.0, 0.0, 0.3 + 0.004 * t)) * cloudShade(p.xy);
+    col = aired(litS(alb, vec3(0.0, 0.0, 1.0), sun, 0.78 * (0.6 + 0.4 * smoothstep(0.3, 1.0, x))), p, t, hd);
     return 1.0;
   }
   float b2;
@@ -790,8 +882,8 @@ float treeTrace(vec3 ro, vec3 rd, float t0, float pix, out vec3 col, out float t
   } else {
     float needles = mix(0.5, noise(vec2(q.x - q.y, q.z * 1.4) * 11.0) * 0.5 + noise(q.xy * 12.0 + q.z * 3.0) * 0.5, near);
     float kind = noise(S * 0.11 + 40.0);
-    vec3 deep = mix(vec3(0.014, 0.03, 0.024), vec3(0.028, 0.038, 0.018), kind);
-    vec3 tip = T.z > 0.5 ? mix(vec3(0.085, 0.12, 0.05), vec3(0.11, 0.13, 0.055), kind) : mix(vec3(0.045, 0.10, 0.065), vec3(0.075, 0.115, 0.055), kind);
+    vec3 deep = mix(vec3(0.010, 0.020, 0.018), vec3(0.018, 0.024, 0.014), kind);
+    vec3 tip = T.z > 0.5 ? mix(vec3(0.050, 0.072, 0.040), vec3(0.064, 0.080, 0.042), kind) : mix(vec3(0.030, 0.058, 0.046), vec3(0.042, 0.066, 0.044), kind);
     alb = mix(deep, tip, smoothstep(0.15, 0.9, open * 0.65 + needles * 0.45));
     n = normalize(n + (needles - 0.5) * 0.6 * near);
   }
@@ -809,7 +901,13 @@ vec3 groundAt(vec3 e, float t, float pix) {
   vec2 P = p.xy;
   vec2 hd = length(e.xy) > 1e-5 ? normalize(e.xy) : vec2(0.0, 1.0);
   vec4 m = mapTexel(P);
-  float h = heightOf(m);
+  // Beside a traced tree (within 1.5 m of its outline, which the slope and
+  // hollows below sample) the map holds the outline too; the ground is without it.
+  vec2 S = vec2(0.0);
+  vec3 T = vec3(0.0);
+  if (m.b < 0.75 || t > 245.0 || !treeNear(P, S, T) || dot(S, S) > 57600.0) T = vec3(0.0);
+  float h = groundH(P, S, T);
+  if (T.x > 0.0) p.z = h;                                  // not up the outline's blurred foot
   float lod = t * pix / max(-e.z, 0.12);                  // metres per pixel along the ground, about
   float gust = fbm(P * 0.06 - uWind * uTime * 0.25, lod * 0.06);
   float sheen = smoothstep(0.45, 0.75, gust);
@@ -817,7 +915,7 @@ vec3 groundAt(vec3 e, float t, float pix) {
   vec3 c;
   {
     float ep = max(1.5 * mapEps(P), lod);
-    vec4 nb = vec4(mapH(P - vec2(ep, 0.0)), mapH(P + vec2(ep, 0.0)), mapH(P - vec2(0.0, ep)), mapH(P + vec2(0.0, ep)));
+    vec4 nb = vec4(groundH(P - vec2(ep, 0.0), S, T), groundH(P + vec2(ep, 0.0), S, T), groundH(P - vec2(0.0, ep), S, T), groundH(P + vec2(0.0, ep), S, T));
     vec3 n = normalize(vec3(nb.x - nb.y, nb.z - nb.w, 2.0 * ep));
     float cavity = clamp(1.0 - 0.9 * (dot(nb, vec4(0.25)) - h) / ep, 0.35, 1.15);   // darker in hollows, lighter on tips
     lod = t * pix / max(dot(-e, n), 0.15);
@@ -926,17 +1024,7 @@ vec3 groundAt(vec3 e, float t, float pix) {
       }
     }
     float fine = mix(0.5, noise(Q * 31.0), clamp(1.5 - lod * 60.0, 0.0, 1.0));
-    float tex = fbm(Q * 1.7 + 5.0, lod * 1.7);
-    float patches = fbm(P * 0.025 + 1.0, lod * 0.025);
-    vec3 straw = mix(vec3(0.56, 0.47, 0.27), vec3(0.39, 0.29, 0.15), smoothstep(0.3, 0.7, tex));   // cured blades, pale to russet
-    straw = mix(straw, vec3(0.19, 0.24, 0.09), clamp((patches - 0.55) * 1.5, 0.0, 0.4));   // greener patches
-    // Sage on the slopes, far off: grey-green in mottled patches.
-    float sage = smoothstep(0.45, 0.62, fbm(P * 0.04 + 13.0, lod * 0.04)) * smoothstep(0.02, 0.10, slope) * (1.0 - near);
-    straw = mix(straw, vec3(0.25, 0.26, 0.19) * (0.7 + 0.6 * fbm(P * 0.7 + 3.0, lod * 0.7)), sage * 0.75);
-    straw *= 0.75 + 0.5 * fine;
-    float tufts = fbm(P * 0.33 + 23.0, lod * 0.33);
-    straw *= mix((0.52 + 0.6 * smoothstep(0.35, 0.65, patches)) * (0.7 + 0.6 * smoothstep(0.3, 0.7, tufts)), 1.0, near);   // far off: tufts, and lighter and darker tracts
-    straw = mix(straw, vec3(0.33, 0.28, 0.21), smoothstep(0.6, 0.75, tufts) * 0.6 * (1.0 - near));     // and bare ground
+    vec3 straw = strawAt(P, Q, lod, near, slope, fine);
     straw = mix(straw, straw * 1.35 + vec3(0.03, 0.03, 0.02), sheen * 0.6 * smoothstep(0.3, 0.9, f));   // gusts show the pale side
     vec3 soil = mix(vec3(0.33, 0.28, 0.21), straw * 0.7, smoothstep(0.45, 0.7, noise(Q * 19.0 + 7.0)) * near);   // soil and litter
     vec3 alb = mix(soil, straw, smoothstep(0.0, 0.2, f));
@@ -980,8 +1068,8 @@ vec3 groundAt(vec3 e, float t, float pix) {
       float needles = 0.5 * (noise(a1 * 13.0) + noise(a2 * 13.0));
       needles = mix(0.5, needles, clamp(1.5 - lod * 26.0, 0.0, 1.0));
       float kind = noise(P * 0.11 + 40.0);
-      vec3 deep = mix(vec3(0.016, 0.034, 0.028), vec3(0.03, 0.04, 0.02), kind);
-      vec3 tip = mix(vec3(0.06, 0.12, 0.075), vec3(0.11, 0.14, 0.06), kind);
+      vec3 deep = mix(vec3(0.012, 0.024, 0.021), vec3(0.021, 0.028, 0.016), kind);
+      vec3 tip = mix(vec3(0.036, 0.068, 0.052), vec3(0.060, 0.080, 0.045), kind);
       vec3 tree = mix(deep, tip, smoothstep(0.3, 0.75, spray * 0.6 + needles * 0.4) * smoothstep(0.5, 1.05, cavity));
       alb = mix(alb, tree * (0.5 + 0.5 * near), cov.z);                     // far stands read dark
       ao = mix(ao, 0.35 + 0.65 * smoothstep(0.45, 1.05, cavity), cov.z);
@@ -1015,12 +1103,12 @@ void main() {
   bool onTree = false;
   if (uDome > 0.5 && uGround > 0.5 && uLand > 0.5 && alt < hz + 4.0) {
     // The ground; where that is a near tree's outline, the tree itself, or
-    // through its gaps to what is behind (up to three trees deep).
+    // through its gaps to what is behind (up to five trees deep).
     vec3 ro = vec3(0.0, 0.0, uEyeH);
     float t0 = 0.0, tOut;
-    for (int pass = 0; pass < 3; pass++) {
+    for (int pass = 0; pass < 6; pass++) {
       tLand = hitGround(ro, e, t0, 11000.0);
-      if (tLand < 0.0) break;
+      if (tLand < 0.0 || pass == 5) break;                   // after five trees, what is there is ground
       float kind = treeTrace(ro, e, tLand, pix, tree, tOut);
       if (kind < 0.5) break;
       if (kind < 1.5) { onTree = true; break; }
