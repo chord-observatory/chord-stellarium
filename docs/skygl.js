@@ -306,6 +306,10 @@ attribute vec2 aPos;
 void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
 `;
 
+// The sky shader, built twice (SkyGL): with LAND 1 for the Landscape layer
+// (daylight, clouds, terrain), and with LAND 0 for the radio sky alone.  The
+// Landscape's code would slow the sky alone even where it does not run: a
+// GPU sets up every pixel for the longest path through the shader.
 const FRAG = `
 #ifdef GL_FRAGMENT_PRECISION_HIGH
 precision highp float;
@@ -345,7 +349,6 @@ uniform vec3 uSunHigh;
 uniform vec3 uAmbLin;       // a white level surface under the sky alone
 uniform vec3 uMoonLin;      // a white surface facing the Moon (made bright enough to see by)
 uniform float uStrength;    // the optical sky's share of the display
-uniform float uLand;        // the Landscape layer: daylight, clouds, terrain
 uniform float uTime;        // seconds, for the wind
 uniform vec2 uWind;         // the wind's direction (east, north)
 uniform float uEyeH;        // the eye above the plain (m)
@@ -1223,9 +1226,10 @@ void main() {
   float hz = skyline(atan(e.x, e.y) / DEG, far);
   bool below = alt < hz;
   float tLand = -1.0;
+#if LAND
   vec3 tree;
   bool onTree = false;
-  if (uDome > 0.5 && uGround > 0.5 && uLand > 0.5 && alt < hz + 4.0) {
+  if (uDome > 0.5 && uGround > 0.5 && alt < hz + 4.0) {
     // The ground; where that is a near tree's outline, the tree itself, or
     // through its gaps to what is behind (up to five trees deep).
     vec3 ro = vec3(0.0, 0.0, uEyeH);
@@ -1242,17 +1246,23 @@ void main() {
     // misses it is in the sky.
     if (far < 0.5) below = false;
   }
-  if (uDome > 0.5 && uLand > 0.5 && (!below || uGround < 0.5) && tLand < 0.0) {
+  if (uDome > 0.5 && (!below || uGround < 0.5) && tLand < 0.0) {
     vec3 sky = skyAt(e);
     col = washed(col, sky);
     vec4 cl = cloudsAt(e, pix, sky + col * 0.3);
     col += cl.rgb + sky * (1.0 - cl.a);                        // radio waves pass through air and cloud
   }
+#endif
   if (uBeamMode > 0 && tLand < 0.0) col += beam(e) * uBeamGain;
+#if LAND
   if (tLand > 0.0) col = onTree ? tree : groundAt(e, tLand, pix);
-  else if (below && uGround > 0.5) {
+  else
+#endif
+  if (below && uGround > 0.5) {
     if (uDome < 0.5) col *= 0.5;
-    else if (uLand > 0.5) col = hillsAt(e, alt, hz, pix);
+#if LAND
+    else col = hillsAt(e, alt, hz, pix);
+#else
     else {
       // The plain ground: darker downward, with a band of haze along the
       // skyline (the same in every direction: below the skyline the
@@ -1261,27 +1271,33 @@ void main() {
       vec3 g = mix(vec3(0.034, 0.042, 0.040), vec3(0.016, 0.020, 0.020), sqrt(depth));
       col = mix(g, vec3(0.06, 0.08, 0.11), 0.35 * exp(-(hz - alt) / 1.2));
     }
+#endif
   }
   gl_FragColor = vec4(col, 1.0);
 }
 `;
 
-function compile(gl, type, src) {
-  const sh = gl.createShader(type);
-  gl.shaderSource(sh, src);
-  gl.compileShader(sh);
-  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
-  return sh;
-}
-
-/** A program over the full-screen triangle (aPos at location 0) and its uniforms by name. */
-function link(gl, frag) {
-  const prog = gl.createProgram();
-  gl.attachShader(prog, compile(gl, gl.VERTEX_SHADER, VERT));
-  gl.attachShader(prog, compile(gl, gl.FRAGMENT_SHADER, frag));
+/** Start building a program over the full-screen triangle (aPos at
+ *  location 0).  The browser may compile it in the background; asking
+ *  for its status (linked) waits for it. */
+function start(gl, frag) {
+  const prog = gl.createProgram(), shaders = [];
+  for (const [type, src] of [[gl.VERTEX_SHADER, VERT], [gl.FRAGMENT_SHADER, frag]]) {
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    gl.attachShader(prog, sh);
+    shaders.push(sh);
+  }
   gl.bindAttribLocation(prog, 0, "aPos");
   gl.linkProgram(prog);
-  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  return { prog, shaders };
+}
+
+/** A started program, linked, and its uniforms by name. */
+function linked(gl, { prog, shaders }) {
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
+    throw new Error(shaders.map((sh) => gl.getShaderInfoLog(sh)).join("") || gl.getProgramInfoLog(prog));
   const u = {};
   for (let i = 0, n = gl.getProgramParameter(prog, gl.ACTIVE_UNIFORMS); i < n; i++) {
     const name = gl.getActiveUniform(prog, i).name;
@@ -1289,6 +1305,7 @@ function link(gl, frag) {
   }
   return { prog, u };
 }
+const link = (gl, frag) => linked(gl, start(gl, frag));
 
 // Row-major 3x3 (astro.js) -> column-major for uniformMatrix3fv.
 const glMat = (m) => new Float32Array([m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]]);
@@ -1328,10 +1345,13 @@ export class SkyGL {
     if (!gl) throw new Error("WebGL is not available");
     this.gl = gl;
     this.canvas = canvas;
-    const { prog, u } = link(gl, FRAG);
-    gl.useProgram(prog);
-    this.prog = prog;
-    this.u = u;
+    // The sky alone at once; the Landscape's, larger, in the background
+    // where the browser can (KHR_parallel_shader_compile), until it is
+    // needed.  onReady: called once the Landscape's can be drawn.
+    this.sky = link(gl, `#define LAND 0\n${FRAG}`);
+    this.landJob = start(gl, `#define LAND 1\n${FRAG}`);
+    this.parallel = gl.getExtension("KHR_parallel_shader_compile");
+    this.onReady = null;
     const buf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, buf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
@@ -1418,7 +1438,28 @@ export class SkyGL {
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.skyTex);
     gl.deleteTexture(dem);
-    gl.useProgram(this.prog);
+  }
+
+  /** The Landscape's program and uniforms, or null while it compiles (it
+   *  then calls onReady when done) or if it failed. */
+  landProgram() {
+    if (this.land === undefined) {
+      const { gl } = this;
+      if (this.parallel && !gl.getProgramParameter(this.landJob.prog, this.parallel.COMPLETION_STATUS_KHR)) {
+        if (!this.polling) {
+          this.polling = true;
+          const poll = () => {
+            if (gl.getProgramParameter(this.landJob.prog, this.parallel.COMPLETION_STATUS_KHR)) { this.polling = false; this.onReady?.(); }
+            else setTimeout(poll, 50);
+          };
+          setTimeout(poll, 50);
+        }
+        return null;
+      }
+      try { this.land = linked(gl, this.landJob); }
+      catch (err) { console.error(`The Landscape's shader failed: ${err.message}`); this.land = null; }
+    }
+    return this.land;
   }
 
   /** The daylight sky and its light (atmos.js skyModel). */
@@ -1438,7 +1479,9 @@ export class SkyGL {
    *       season: { bloom: [4], green, snow } (app.js season) } */
   draw(p) {
     if (p.land) this.buildTerrain(p);
-    const { gl, u } = this, d = p.dpr, cam = p.cam;
+    const { gl } = this, d = p.dpr, cam = p.cam;
+    const { prog, u } = (p.land && this.landProgram()) || this.sky;     // the sky alone until the Landscape's is compiled
+    gl.useProgram(prog);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.uniform2f(u.uRes, this.canvas.width, this.canvas.height);
     gl.uniform3f(u.uView, cam.cx * d, cam.cy * d, cam.s * d);
@@ -1475,7 +1518,6 @@ export class SkyGL {
       gl.uniform3fv(u.uAmbLin, m.ambLin);
       gl.uniform1f(u.uStrength, m.strength);
     }
-    gl.uniform1f(u.uLand, p.land ? 1 : 0);
     gl.uniform1f(u.uTime, p.time);
     gl.uniform2fv(u.uWind, p.wind);
     gl.uniform1f(u.uEyeH, p.eyeH);

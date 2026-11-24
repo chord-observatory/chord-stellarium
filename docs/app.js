@@ -1055,6 +1055,7 @@ async function main() {
   readHash();
   resize();
   try { gl = new SkyGL($("sky"), img, { alt: horizon.alt_deg, dist: horizon.flat ? null : horizon.dist_km }); } catch (err) { fail(`This page needs WebGL. ${err.message}`); return; }
+  gl.onReady = () => { dirty = true; };                 // the Landscape's shader has compiled
   overlay = new Overlay($("ov"));
   trace = new Trace($("trace"), img, skyMeta);
   wireControls();
