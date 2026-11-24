@@ -665,13 +665,44 @@ float grassH(vec2 Q) {
 // The cover of the ground from a map texel: rock, brush and tree, each 0..1.
 vec3 coverOf(vec4 m, vec2 P, float lod) {
   float woody = clamp(2.0 * m.a - 1.0, 0.0, 1.0);
-  if (length(P) >= 750.0) {                                 // far off: the share of trees, painted as dots
-    float dots = fbm(P * 0.09 + 5.0, lod * 0.09) * 0.5 + noise(P * 0.021) * 0.5;
-    float lone = fbm(P * 0.13 + 9.0, lod * 0.13);                // single trees, where few stand
-    return vec3(clamp(1.0 - 2.0 * m.a, 0.0, 1.0), 0.0, max(smoothstep(-0.06, 0.06, woody - dots), smoothstep(-0.03, 0.03, lone - 0.74 + 0.5 * woody) * step(0.01, woody)));
-  }
+  if (length(P) >= 750.0) return vec3(clamp(1.0 - 2.0 * m.a, 0.0, 1.0), 0.0, 0.0);   // far off, the trees are farTrees'
   float tree = smoothstep(0.6, 0.85, woody);
   return vec3(clamp(1.0 - 2.0 * m.a, 0.0, 1.0), smoothstep(0.1, 0.35, woody) * (1.0 - tree), tree);
+}
+
+// How thick the far trees stand at P, in clumps and gaps, for share (0..1)
+// of the ground: 0 .. 2 share, share on average.
+float clumpAt(vec2 P, float share) { return share * 2.0 * smoothstep(0.3, 0.7, noise(P * 0.02 + 70.0)); }
+
+// Far off (from 750 m, where the maps hold only the share of trees) the
+// trees stand one to a 12 m cell, in clumpAt of the cells, and are drawn
+// where they stand in front of the slope.  The ray to P passes a
+// trunk a (m) short of P along the ground, at a * rise above the slope
+// (rise: the slope's rise across the ray, per metre), and b to its side;
+// the tree hides P if b is inside its crown at that height.  The cells are
+// looked up every 6 m back along the ray, up to 48 m.  lod: metres per
+// pixel across.  Returns the cover (0..1); side: where across the crown
+// (-1..1); up: how high up the tree (0..1).
+float farTrees(vec2 P, vec2 hd, float rise, float share, float lod, out float side, out float up) {
+  float cover = 0.0, best = -99.0;
+  side = 0.0; up = 0.5;
+  vec2 hp = vec2(-hd.y, hd.x);
+  for (int k = 0; k < 8; k++) {
+    vec2 g = floor((P - hd * (6.0 * float(k))) / 12.0);
+    vec4 t = texture2D(uNoise, (g + 0.5) / 256.0);
+    if (t.r >= 2.0 * share) continue;
+    vec2 S = (g + 0.29 + 0.42 * t.gb) * 12.0;                // the trunk, with the crown inside the cell
+    if (t.r >= clumpAt(S, share)) continue;
+    vec3 T = treeOf(t);
+    vec2 D = P - S;
+    float a = dot(D, hd), b = dot(D, hp), z = max(a, 0.0) * rise / T.x;
+    if (a < -T.y || z > 1.0 || a < best) continue;
+    float w = T.z < 0.5 ? T.y * (1.0 - z) * (0.8 + 0.2 * sin(z * 31.0 + t.a * 40.0))        // a fir: a ragged cone
+                        : z < 0.5 ? 0.12 * T.y : T.y * sqrt(max(1.0 - pow((z - 0.75) * 4.0, 2.0), 0.0));   // a pine: a trunk under a crown
+    float c = smoothstep(-lod, lod, w - abs(b));
+    if (c > 0.0) { cover = max(cover, c); best = a; side = clamp(b / max(w, 0.01), -1.0, 1.0); up = z; }
+  }
+  return cover;
 }
 
 // The air and the mist between the eye and p, t away, over colour c.
@@ -1077,6 +1108,23 @@ vec3 groundAt(vec3 e, float t, float pix) {
       alb = mix(alb, tree * (0.5 + 0.5 * near), cov.z);                     // far stands read dark
       ao = mix(ao, 0.35 + 0.65 * smoothstep(0.45, 1.05, cavity), cov.z);
       n = normalize(mix(n, n + vec3(spray - 0.5, needles - 0.5, 0.0) * 1.2 * near, cov.z));
+    }
+    // Far off, the trees in front of the slope, over a floor of shade and
+    // litter that closes up where they stand thick; farther still (a pixel
+    // wider than 3 m), their share of the view.
+    if (m.a > 0.5 && length(P) >= 750.0) {
+      float share = clamp(2.0 * m.a - 1.0, 0.0, 1.0), across = t * pix, side, up;
+      float rise = max(-dot(n.xy, hd) / max(n.z, 0.2) - e.z / max(length(e.xy), 1e-4), 0.03);
+      float ft = farTrees(P, hd, rise, share, across, side, up);
+      ft = mix(ft, share * min(0.3 / rise, 0.9), smoothstep(3.0, 8.0, across));
+      float kind = noise(P * 0.11 + 40.0);
+      vec3 deep = mix(vec3(0.012, 0.024, 0.021), vec3(0.021, 0.028, 0.016), kind);
+      vec3 tip = mix(vec3(0.036, 0.068, 0.052), vec3(0.060, 0.080, 0.045), kind);
+      vec3 nt = normalize(vec3(-hd * sqrt(max(1.0 - side * side, 0.0)) + vec2(-hd.y, hd.x) * side, 0.3 + 0.5 * up));
+      alb = mix(alb, deep + vec3(0.008, 0.006, 0.003), smoothstep(0.25, 0.85, clumpAt(P, share)) * 0.95);
+      alb = mix(alb, mix(deep, tip, 0.3 + 0.5 * up) * 0.6, ft);
+      n = normalize(mix(n, nt, ft));
+      ao = mix(ao, 0.5 + 0.3 * up, ft);
     }
     ao *= mix(1.0, min(cavity, 1.0), (1.0 - cov.z) * max(step(0.5, max(woody, rock)), 1.0 - near));   // hollows in brush and rock
     float sun = sunPast(p + n * (0.3 + 0.004 * t) + vec3(0.0, 0.0, GRASS * k * f)) * shade * lit;
