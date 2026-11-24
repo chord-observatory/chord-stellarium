@@ -5,8 +5,8 @@
 // pass through both.  The Landscape layer is part real, part made up: the
 // hills from 700 m out are the real terrain (terrain.png), with made-up
 // detail and firs; nearer, a made-up plain of bunchgrass that the wind
-// sweeps, with firs, brush and boulders; over it, clouds from fractal
-// noise on a steady wind.
+// sweeps, with firs, brush and boulders, flowers and snow by the season;
+// over it, clouds from fractal noise on a steady wind.
 //
 // The beam is drawn over the band: BAND_SAMPLES frequencies between the
 // two slider handles, evenly spaced in 1/f, each tinted by its place in
@@ -351,6 +351,9 @@ uniform vec2 uWind;         // the wind's direction (east, north)
 uniform float uEyeH;        // the eye above the plain (m)
 uniform vec4 uArrayBox;     // the array's pad: centre east, north and half-sizes (m) from the eye
 uniform float uSunOverHills; // 1 when the Sun is above the real skyline, 0 behind it
+uniform vec4 uBloom;        // the season (app.js): balsamroot, lupine, yarrow, rabbitbrush in flower (0 .. 1)
+uniform float uGreen;       // the bunchgrass greening (0 .. 1)
+uniform float uSnow;        // the snow lying (0 .. 1)
 uniform sampler2D uMap0;    // the made-up terrain's height maps (MAPS)
 uniform sampler2D uMap1;
 uniform sampler2D uMap2;
@@ -572,8 +575,9 @@ vec3 hillsAt(vec3 e, float alt, float hz, float pix) {
   float gully = fbm(q + y * vec2(3.0, 5.0), pix * 30.0);                     // ridges and gullies run downhill
   float patch = fbm(q * 2.6 + y * vec2(40.0, 60.0), pix * 80.0);
   float pine = smoothstep(0.50, 0.64, patch + up * 0.22 + (gully - 0.5) * 0.7 + layer * 0.03);
-  vec3 alb = mix(vec3(0.27, 0.22, 0.13), vec3(0.07, 0.10, 0.06), pine);
+  vec3 alb = mix(mix(vec3(0.27, 0.22, 0.13), vec3(0.17, 0.21, 0.09), 0.5 * uGreen), vec3(0.07, 0.10, 0.06), pine);
   alb *= 0.8 + 0.4 * patch;
+  alb = mix(alb, vec3(0.80, 0.83, 0.88), uSnow * (0.55 + 0.45 * up) * (1.0 - 0.75 * pine));
   vec3 n = normalize(vec3(-hd * 0.6 + vec2(-hd.y, hd.x) * (gully - 0.5) * 1.8, 0.8));
   vec3 c = litS(alb, n, uSunOverHills, 1.0);
   float haze = 0.30 + 0.15 * layer + 0.10 * smoothstep(0.6, 1.0, up);       // each ridge fades toward its crest
@@ -586,7 +590,7 @@ vec3 hillsAt(vec3 e, float alt, float hz, float pix) {
 
 // ---- the made-up terrain, ray-marched through its height maps
 
-const float GRASS = 0.36;                // the tallest bunchgrass (m)
+const float GRASS = 0.26;                // the tallest bunchgrass (m)
 
 // The terrain's maps (built once from terrainAt; skygl.js) around the
 // observer, as stored: (height high byte, low byte, tall, cover).
@@ -658,8 +662,25 @@ float dishShade(vec2 P) {
 
 // The bunchgrass standing at Q (m): its height, 0..1 of GRASS.
 float grassH(vec2 Q) {
-  float bunch = smoothstep(0.17, 0.5, noise(Q * 6.0));
+  float bunch = smoothstep(0.3, 0.58, noise(Q * 6.0));
   return bunch * (0.3 + 0.7 * noise(mat2(0.8, 0.6, -0.6, 0.8) * Q * 41.0));
+}
+
+// The wildflower that may stand in the half-metre cell g, in flower as the
+// season has it (uBloom), more of them in some tracts than others.  rr:
+// the cell's random numbers (rr.a the kind: under 0.45 arrowleaf
+// balsamroot, a yellow daisy; under 0.8 lupine, a violet spike; else
+// yarrow, a low white dome); c: where it stands; top: the top of its head
+// (m); RV: the head's radius and half-height (m).  False where none.
+// Whether it grows depends on its own place, not on the pixel's.
+bool flowerIn(vec2 g, out vec4 rr, out vec2 c, out float top, out vec2 RV) {
+  rr = texture2D(uNoise, (g + 0.5) / 256.0);
+  c = (g + 0.15 + 0.7 * rr.gb) * 0.5;
+  top = 0.22 + 0.16 * fract(rr.a * 7.0);
+  RV = rr.a < 0.45 ? vec2(0.055, 0.03) : rr.a < 0.8 ? vec2(0.024, 0.10) : vec2(0.055, 0.026);
+  if (rr.r >= 0.4) return false;
+  float on = rr.a < 0.45 ? uBloom.x : rr.a < 0.8 ? uBloom.y : 0.5 * uBloom.z;
+  return rr.r < 0.4 * on * (0.3 + 0.7 * smoothstep(0.2, 0.8, noise(c * 0.12 + 60.0)));
 }
 
 // The cover of the ground from a map texel: rock, brush and tree, each 0..1.
@@ -733,6 +754,16 @@ float groundH(vec2 P, vec2 S, vec3 T) {
   return inside;
 }
 
+// The snow lying at p (m) on ground of normal n (0 .. 1, by uSnow): a
+// dusting on the plain, in drifts and bare patches, thicker up the hills
+// and on slopes that face north, none on steep faces.  lod: metres per pixel.
+const vec3 SNOW = vec3(0.80, 0.83, 0.88);
+float snowAt(vec3 p, vec3 n, float lod) {
+  if (uSnow <= 0.0) return 0.0;
+  float depth = uSnow * (0.5 + 0.6 * smoothstep(80.0, 400.0, p.z) + 0.3 * clamp(n.y * 3.0, -0.5, 1.0));
+  return smoothstep(0.4, 0.6, depth + 0.6 * (fbm(p.xy * 0.4 + 81.0, lod * 0.4) - 0.5)) * smoothstep(0.5, 0.8, n.z);
+}
+
 // The grassland's colour at P, Q where the ray meets the blades, for lod
 // metres per pixel; near: 1 where the blades stand in relief, slope: 1 -
 // the normal's z, fine: the finest grain (0..1).
@@ -741,6 +772,7 @@ vec3 strawAt(vec2 P, vec2 Q, float lod, float near, float slope, float fine) {
   float patches = fbm(P * 0.025 + 1.0, lod * 0.025);
   vec3 straw = mix(vec3(0.56, 0.47, 0.27), vec3(0.39, 0.29, 0.15), smoothstep(0.3, 0.7, tex));   // cured blades, pale to russet
   straw = mix(straw, vec3(0.19, 0.24, 0.09), clamp((patches - 0.55) * 1.5, 0.0, 0.4));   // greener patches
+  straw = mix(straw, vec3(0.15, 0.26, 0.11) * (0.8 + 0.4 * tex), uGreen * (0.45 + 0.35 * patches));   // in spring, new blades among last year's
   // Sage on the slopes, far off: grey-green in mottled patches.
   float sage = smoothstep(0.45, 0.62, fbm(P * 0.04 + 13.0, lod * 0.04)) * smoothstep(0.02, 0.10, slope) * (1.0 - near);
   straw = mix(straw, vec3(0.25, 0.26, 0.19) * (0.7 + 0.6 * fbm(P * 0.7 + 3.0, lod * 0.7)), sage * 0.75);
@@ -892,6 +924,7 @@ float treeTrace(vec3 ro, vec3 rd, float t0, float pix, out vec3 col, out float t
     float lod = t * pix / max(-rd.z, 0.15), fine = mix(0.5, noise(p.xy * 31.0), clamp(1.5 - lod * 60.0, 0.0, 1.0));
     float x = length(p.xy - S) / T.y + 0.4 * (noise(p.xy * 1.3 + seed * 50.0) - 0.5);
     vec3 alb = mix(vec3(0.22, 0.14, 0.075) * (0.75 + 0.5 * fine), strawAt(p.xy, p.xy, lod, clamp(1.5 - lod * 2.5, 0.0, 1.0), 0.0, fine), smoothstep(0.35, 1.0, x));
+    alb = mix(alb, SNOW, snowAt(p, vec3(0.0, 0.0, 1.0), lod) * smoothstep(0.3, 1.0, x));   // less under the boughs
     float sun = sunPast(p + vec3(0.0, 0.0, 0.3 + 0.004 * t)) * cloudShade(p.xy);
     col = aired(litS(alb, vec3(0.0, 0.0, 1.0), sun, 0.78 * (0.6 + 0.4 * smoothstep(0.3, 1.0, x))), p, t, hd);
     return 1.0;
@@ -919,6 +952,7 @@ float treeTrace(vec3 ro, vec3 rd, float t0, float pix, out vec3 col, out float t
     vec3 deep = mix(vec3(0.010, 0.020, 0.018), vec3(0.018, 0.024, 0.014), kind);
     vec3 tip = T.z > 0.5 ? mix(vec3(0.050, 0.072, 0.040), vec3(0.064, 0.080, 0.042), kind) : mix(vec3(0.030, 0.058, 0.046), vec3(0.042, 0.066, 0.044), kind);
     alb = mix(deep, tip, smoothstep(0.15, 0.9, open * 0.65 + needles * 0.45));
+    alb = mix(alb, SNOW, uSnow * 0.5 * open * smoothstep(0.55, 0.9, n.z) * smoothstep(0.35, 0.65, needles));   // snow on the boughs' tops
     n = normalize(n + (needles - 0.5) * 0.6 * near);
   }
   col = litS(alb, n, shade * lit, 0.2 + 0.8 * open);
@@ -961,7 +995,8 @@ vec3 groundAt(vec3 e, float t, float pix) {
     vec2 pq = abs(P - uArrayBox.xy) - uArrayBox.zw + 2.0;
     float onPad = 1.0 - smoothstep(-0.5, 0.5, max(pq.x, pq.y));
     float grassy = (1.0 - rock) * (1.0 - onPad) * (1.0 - woody);
-    float bloom = smoothstep(0.38, 0.7, noise(P * 0.08 + 60.0)) * grassy;
+    float inFlower = dot(uBloom.xyz, vec3(1.0, 1.0, 0.5));
+    bool flowers = inFlower > 0.01 && grassy > 0.5;
 
     // Grass.  Close by it stands in relief: the ray is marched down through
     // the bunches, bent by the wind, with flowers among them.  f: how high
@@ -976,7 +1011,8 @@ vec3 groundAt(vec3 e, float t, float pix) {
       float Hm = GRASS * k * (0.5 + 0.5 * noise(P * 0.9 + 9.0));       // taller and shorter stands
       float rate = max(dot(-n.xy / max(n.z, 0.2), e.xy) - e.z, 0.03);    // height lost per metre of ray
       // Where flowers may grow the march starts above the tallest of them.
-      float back = min(max(1.3 * Hm, bloom > 0.0 ? 1.12 * GRASS * k : 0.0) / rate, 5.0), dt = back / 26.0;
+      bool fls = flowers && t < 36.0;
+      float back = min(max(1.3 * Hm, fls ? 0.42 : 0.0) / rate, 5.0), dt = back / 26.0;
       float jit = texture2D(uNoise, gl_FragCoord.xy / 256.0).a;
       float bend = (0.05 + 0.12 * sheen) * (0.7 + 0.3 * sin(uTime * 2.6 + dot(P, uWind) * 1.3));
       f = 0.0;
@@ -984,23 +1020,18 @@ vec3 groundAt(vec3 e, float t, float pix) {
         float tau = back - (float(i) + jit) * dt;            // metres short of the ground
         float s = tau * rate / Hm;
         vec2 q = P - e.xy * tau - uWind * bend * s * s;
-        if (bloom > 0.0) {
-          // A flower may stand in each third-of-a-metre cell: a head on a
-          // thin stem.  The head is an ellipsoid, met exactly by the piece
-          // of the ray since the last step (looked for in the cells at both
-          // of its ends), so its outline is clean.
+        if (fls) {
+          // A flower (flowerIn) is a head on a thin stem.  The head is an
+          // ellipsoid, met exactly by the piece of the ray since the last
+          // step (looked for in the cells at both of its ends), so its
+          // outline is clean.
           float sP = (tau + dt) * rate / Hm;
           vec2 qP = P - e.xy * (tau + dt) - uWind * bend * sP * sP;
           for (int w = 0; w < 2; w++) {
-            vec2 gi = floor((w == 0 ? qP : q) * 3.0);
-            vec4 rr = texture2D(uNoise, (gi + 0.5) / 256.0);
-            if (rr.r >= 0.4) continue;
-            vec2 c = (gi + 0.25 + 0.5 * rr.gb) / 3.0;
-            // Whether it grows, and how tall, depend on the flower's own place, not on the pixel.
-            if (rr.r >= 0.4 * smoothstep(0.44, 0.7, noise(c * 0.08 + 60.0))) continue;
-            float top = (0.68 + 0.4 * fract(rr.a * 7.0)) * GRASS * k;
-            // Balsamroot: a yellow daisy.  Lupine: a tall violet spike.  Yarrow: a low white dome.
-            vec2 RV = rr.a < 0.45 ? vec2(0.055, 0.03) : rr.a < 0.8 ? vec2(0.024, 0.10) : vec2(0.055, 0.026);
+            vec4 rr;
+            vec2 c, RV;
+            float top;
+            if (!flowerIn(floor((w == 0 ? qP : q) * 2.0), rr, c, top, RV) || dot(c, c) >= 900.0) continue;
             vec3 sc = vec3(1.0, 1.0, RV.x / RV.y), C = vec3(c, top - RV.y);
             vec3 a3 = (vec3(qP, sP * Hm) - C) * sc, d3 = (vec3(q, s * Hm) - C) * sc - a3;
             float aa = dot(d3, d3), bb = dot(a3, d3), cc = dot(a3, a3) - RV.x * RV.x;
@@ -1057,6 +1088,26 @@ vec3 groundAt(vec3 e, float t, float pix) {
         }
       }
     }
+    // From 30 m out the flowers are not marched for (the march leaves them
+    // out) but drawn on the ground where they stand, each head stretched
+    // along the ray as the ground is foreshortened (drop: the height the
+    // ray falls per metre), so it shows at its own size.  It covers the
+    // pixel smoothly over a pixel, and fades once smaller than one.
+    float flCov = 0.0;
+    if (flowers && t >= 29.0 && t * pix < 0.3) {
+      float drop = max(-e.z / max(length(e.xy), 1e-4), 0.02);
+      for (int w = 0; w < 3; w++) {
+        vec4 rr;
+        vec2 c, RV;
+        float top;
+        if (!flowerIn(floor((P + hd * (0.5 * float(w) - 0.5)) * 2.0), rr, c, top, RV) || dot(c, c) < 900.0) continue;
+        vec2 D = P - c;
+        float a = dot(D, hd) * drop, b = dot(D, vec2(-hd.y, hd.x));
+        float d = length(vec2(b / RV.x, a / RV.y)), r = min(RV.x, RV.y) / (t * pix);   // d: 1 at its edge; r: its radius in pixels
+        float cv = clamp(0.5 + (1.0 - d) * r, 0.0, 1.0) * min(sqrt(RV.x * RV.y) / (t * pix), 1.0);
+        if (cv > flCov) { flCov = cv; flCol = rr.a < 0.45 ? vec3(0.80, 0.57, 0.04) : rr.a < 0.8 ? vec3(0.28, 0.19, 0.65) : vec3(0.84, 0.83, 0.74); }
+      }
+    }
     float fine = mix(0.5, noise(Q * 31.0), clamp(1.5 - lod * 60.0, 0.0, 1.0));
     vec3 straw = strawAt(P, Q, lod, near, slope, fine);
     straw = mix(straw, straw * 1.35 + vec3(0.03, 0.03, 0.02), sheen * 0.6 * smoothstep(0.3, 0.9, f));   // gusts show the pale side
@@ -1067,7 +1118,14 @@ vec3 groundAt(vec3 e, float t, float pix) {
       alb = flCol;
       ao = 1.0; lit = 1.0;
     } else if (fl > 0.0) { alb = vec3(0.17, 0.21, 0.08); ao = 0.8; }
-    alb = mix(alb, vec3(0.64, 0.52, 0.20), smoothstep(0.2, 0.9, bloom) * 0.12 * (1.0 - k));        // far off, a tint where the flowers grow
+    alb = mix(alb, flCol, flCov);
+    ao = mix(ao, 1.0, flCov);
+    lit = mix(lit, 1.0, flCov);
+    // Farther still, the flowers in season tint the grass, and rabbitbrush
+    // gilds it in the autumn.
+    vec3 tint = uBloom.x * vec3(0.80, 0.57, 0.04) + uBloom.y * vec3(0.28, 0.19, 0.65) + 0.5 * uBloom.z * vec3(0.84, 0.83, 0.74) + uBloom.w * vec3(0.80, 0.60, 0.10);
+    float tints = inFlower + uBloom.w;
+    if (tints > 0.01) alb = mix(alb, tint / tints, min(tints, 1.0) * 0.08 * grassy * smoothstep(0.15, 0.4, t * pix));
 
     // Rock: crags, boulders and steep faces; bedded, cracked, with lichen.
     if (rock > 0.01) {
@@ -1091,6 +1149,9 @@ vec3 groundAt(vec3 e, float t, float pix) {
       float clump = fbm(P * 5.0 + 3.0, lod * 5.0), leaves = mix(0.5, noise(P * 37.0), clamp(1.5 - lod * 70.0, 0.0, 1.0));
       vec3 leaf = mix(vec3(0.27, 0.31, 0.25), vec3(0.33, 0.31, 0.21), noise(P * 0.5));
       leaf *= (0.45 + 0.9 * smoothstep(0.3, 0.7, clump)) * (0.8 + 0.4 * leaves);
+      // Rabbitbrush among the sage, in patches, golden on top in flower.
+      float gold = smoothstep(0.55, 0.6, noise(P * 0.13 + 77.0)) * uBloom.w * smoothstep(0.4, 0.75, clump) * smoothstep(0.4, 0.8, n.z);
+      leaf = mix(leaf, vec3(0.80, 0.60, 0.10) * (0.6 + 0.5 * leaves), gold);
       alb = mix(alb, leaf, cov.y);
       ao = mix(ao, 0.55 + 0.45 * smoothstep(0.3, 0.7, clump), cov.y);
     }
@@ -1112,10 +1173,11 @@ vec3 groundAt(vec3 e, float t, float pix) {
     // Far off, the trees in front of the slope, over a floor of shade and
     // litter that closes up where they stand thick; farther still (a pixel
     // wider than 3 m), their share of the view.
+    float ft = 0.0;
     if (m.a > 0.5 && length(P) >= 750.0) {
       float share = clamp(2.0 * m.a - 1.0, 0.0, 1.0), across = t * pix, side, up;
       float rise = max(-dot(n.xy, hd) / max(n.z, 0.2) - e.z / max(length(e.xy), 1e-4), 0.03);
-      float ft = farTrees(P, hd, rise, share, across, side, up);
+      ft = farTrees(P, hd, rise, share, across, side, up);
       ft = mix(ft, share * min(0.3 / rise, 0.9), smoothstep(3.0, 8.0, across));
       float kind = noise(P * 0.11 + 40.0);
       vec3 deep = mix(vec3(0.012, 0.024, 0.021), vec3(0.021, 0.028, 0.016), kind);
@@ -1125,6 +1187,16 @@ vec3 groundAt(vec3 e, float t, float pix) {
       alb = mix(alb, mix(deep, tip, 0.3 + 0.5 * up) * 0.6, ft);
       n = normalize(mix(n, nt, ft));
       ao = mix(ao, 0.5 + 0.3 * up, ft);
+    }
+    // Snow: on the soil and the tops of things; the grass stands through
+    // it (close by, where the ray met a blade; farther off, more of the
+    // view the lower the ray), and trees and brush shed most of it.
+    if (uSnow > 0.0) {
+      float low = mix(0.75, 0.3, smoothstep(0.05, 0.5, -e.z / max(length(e.xy), 1e-4)));
+      float stand = mix(low * grassy, 0.8 * smoothstep(0.35, 0.9, f), k) * (1.0 - onPad) * under(80.0, 400.0, p.z);   // up the hills it lies deeper
+      float snow = snowAt(p, n, lod) * (1.0 - stand) * (1.0 - 0.6 * max(cov.z, ft)) * (1.0 - 0.5 * cov.y);
+      alb = mix(alb, SNOW, snow);
+      ao = mix(ao, 0.9, snow);
     }
     ao *= mix(1.0, min(cavity, 1.0), (1.0 - cov.z) * max(step(0.5, max(woody, rock)), 1.0 - near));   // hollows in brush and rock
     float sun = sunPast(p + n * (0.3 + 0.004 * t) + vec3(0.0, 0.0, GRASS * k * f)) * shade * lit;
@@ -1362,7 +1434,8 @@ export class SkyGL {
   /** p: { cam, ob, dpr, stretch, skyGain, dome, ground, bore, beamMode, beamGain,
    *       band: [lo, hi], array, sun, moon (ENU), moonLin, land, time,
    *       wind, eyeH, arrayBox:
-   *       [east, north, half east, half north], sunOverHills (0 .. 1) } */
+   *       [east, north, half east, half north], sunOverHills (0 .. 1),
+   *       season: { bloom: [4], green, snow } (app.js season) } */
   draw(p) {
     if (p.land) this.buildTerrain(p);
     const { gl, u } = this, d = p.dpr, cam = p.cam;
@@ -1408,6 +1481,9 @@ export class SkyGL {
     gl.uniform1f(u.uEyeH, p.eyeH);
     gl.uniform4fv(u.uArrayBox, p.arrayBox);
     gl.uniform1f(u.uSunOverHills, p.sunOverHills);
+    gl.uniform4fv(u.uBloom, p.season.bloom);
+    gl.uniform1f(u.uGreen, p.season.green);
+    gl.uniform1f(u.uSnow, p.season.snow);
     for (let i = 0; i < MAPS.length; i++) gl.uniform1i(u[`uMap${i}`], 4 + i);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }

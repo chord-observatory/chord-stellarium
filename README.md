@@ -140,12 +140,19 @@ PUPPETEER_CACHE_DIR=$D/cache node shots.mjs http://127.0.0.1:8765/ $D/shots 1400
   itself) and ray-marches them per pixel. Within 235 m each tree is
   traced inside its outline as a true shape (`treeTrace`): firs in tiers
   of boughs, pines with a trunk under clumps; the ray goes on through
-  the gaps. The real skyline (`horizon.json`) is still
-  what hides the Sun, and backs the terrain beyond 8 km.
+  the gaps. Beyond 750 m, where the maps hold only how many trees stand,
+  each tree is drawn where it stands in front of the slope (`farTrees`).
+  The real skyline (`horizon.json`) is still what hides the Sun, and
+  backs the terrain where the skyline lies beyond the 8 km maps.
 - Near the observer the ground is made up: a plain, knolls, sagebrush
   and firs (no lake: there is none on site).
   Within about 40 m the grass stands in relief: each ray is marched down
-  through the bunches, which bend in the wind, with flowers among them.
+  through the bunches, which bend in the wind, with wildflowers scattered
+  among them.
+- The season follows the page's date (`season` in `app.js`): balsamroot
+  and lupine flower in spring, yarrow in summer and rabbitbrush in the
+  autumn; the grass greens in spring; from late November to early March
+  snow lies on the plain and, thicker, up the hills.
   It is levelled where the dishes stand and along the sight line to them,
   so the 2D-drawn dishes are never hidden; the dishes
   shade the ground. Mist lies in the low ground about sunrise and sunset.

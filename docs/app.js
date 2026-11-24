@@ -243,6 +243,22 @@ function insets() {
 
 const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 
+/** The Landscape's season at time ms, by the day of the year (as in the
+ *  South Okanagan grassland, a typical year): bloom: how far in flower
+ *  are arrowleaf balsamroot (mid-April to May), silky lupine (May to
+ *  June), yarrow (June, July) and rabbitbrush (September, October), each
+ *  0 .. 1; green: the bunchgrass greening in spring (0 cured .. 1); snow:
+ *  the snow lying, from late November to early March (0 .. 1). */
+function season(ms) {
+  const d = (ms - Date.UTC(new Date(ms).getUTCFullYear(), 0, 1)) / 864e5;
+  const span = (a, b, c, e) => smooth(a, b, d) * (1 - smooth(c, e, d));      // rises over a .. b, falls over c .. e
+  return {
+    bloom: [span(98, 112, 140, 158), span(128, 142, 172, 190), span(152, 168, 200, 222), span(243, 256, 288, 305)],
+    green: span(70, 105, 150, 190),
+    snow: Math.max(1 - smooth(42, 72, d), smooth(325, 352, d)),
+  };
+}
+
 function computeFrame() {
   const ob = A.observer(st.t, site.site);
   const sun = A.sun(ob), moon = A.moon(ob), phase = A.moonPhase(sun, moon);
@@ -330,7 +346,7 @@ function render() {
     beamMode: { off: 0, dish: 1, array: 2 }[st.beamMode], beamGain: 1, band: st.band, array: site.array,
     sun: frame.sun.enu, moon: frame.moon.enu, moonLin: frame.moonLin,
     land: st.layers.land && !!terrain, terrain, time: windTime(), wind: WIND, eyeH: EYE_M,
-    arrayBox: arrayBox(), sunOverHills: frame.sunOverHills,
+    arrayBox: arrayBox(), sunOverHills: frame.sunOverHills, season: season(st.t),
   };
   if (frame.sky) gl.setSky(frame.sky);
   gl.draw(glParams);
