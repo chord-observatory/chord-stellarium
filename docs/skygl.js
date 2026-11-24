@@ -1385,7 +1385,7 @@ export class SkyGL {
    *  far trees), to find what a slow compiler chokes on */
   constructor(canvas, image, horizon, cut = []) {
     this.cut = ["trees", "flowers", "far"].map((k) => `#define ${{ trees: "TREES", flowers: "FLOWERS", far: "FARTREES" }[k]} ${cut.includes(k) ? 0 : 1}\n`).join("");
-    const gl = canvas.getContext("webgl", { antialias: false, premultipliedAlpha: false, preserveDrawingBuffer: true });
+    const gl = canvas.getContext("webgl", { antialias: false, premultipliedAlpha: false, preserveDrawingBuffer: true, powerPreference: "high-performance" });
     if (!gl) throw new Error("WebGL is not available");
     this.gl = gl;
     this.canvas = canvas;

@@ -1097,7 +1097,7 @@ async function main() {
   gl.onReady = () => {                                  // the Landscape can be drawn
     dirty = true;
     landProbe();
-    $("hint").textContent = `Landscape ready: shaders ${(gl.compileMs / 1000).toFixed(1)} s, terrain ${(gl.bakeMs / 1000).toFixed(1)} s`;
+    $("hint").textContent = `Landscape ready: shaders ${(gl.compileMs / 1000).toFixed(1)} s, terrain ${(gl.bakeMs / 1000).toFixed(1)} s, on ${gl.renderer()}`;
     setTimeout(() => { $("hint").textContent = hint; }, 20000);
   };
   overlay = new Overlay($("ov"));
