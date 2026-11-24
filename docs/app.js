@@ -45,6 +45,7 @@ const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const WIND = [0.92, 0.38];               // the made-up wind blows toward east-northeast (unit vector)
 const MOON_LIGHT = [0.13, 0.145, 0.165]; // full moonlight on a white surface, exposed linear (bright enough to see by)
 const ANIM_MS = 33;                      // frame interval while the wind blows
+const RES_START = 1, RES_MIN = 0.5;      // sky pixels per CSS pixel while the wind blows: at first, and the least (see govern)
 
 const st = {
   live: true, t: Date.now(), playing: true, speed: 1,
@@ -56,7 +57,7 @@ const st = {
 };
 
 let site, cat, frbCat, skyMeta, horizon, gl, overlay, trace, data, cam, frame, glParams, dpr = 1;
-let glScale = 1, frameMs = 16, scaleAt = 0;   // the sky canvas's resolution while the wind blows (see govern)
+let glScale = 1, scaleAt = 0, scaleHold = 0, scaleOk = 0, windOn = false, windSkip = false, windDts = [];   // the sky canvas's resolution while the wind blows (see govern)
 let dirty = true, lastDraw = 0, lastWind = 0, lastPanels = 0, lastHash = 0, hits = [], blink = [];
 const nameIndex = new Map();             // search names -> objects
 
@@ -389,14 +390,31 @@ function sizeSky() {
   dirty = true;
 }
 
-/** While the wind blows the sky redraws every frame; on a slow GPU, draw it
- *  at a lower resolution (down to half) to keep the motion smooth. */
+/** While the wind blows the sky redraws every ANIM_MS.  A GPU that cannot
+ *  keep up stretches the interval to its time per frame, and that time
+ *  goes as the pixels drawn.  So, from the median of six intervals: when
+ *  behind, the sky canvas shrinks at once to the size that keeps up (to
+ *  RES_MIN at least), or back to the last size that kept up if that is
+ *  larger (the interval counts whole display frames, so it overstates the
+ *  cost); when keeping up, it grows a step toward the screen's resolution.  The steps follow each other at once until one has to be
+ *  undone; after that each waits 2 s, then twice as long after each undo
+ *  (to 1 min).  dt: ms since the last wind frame. */
 function govern(dt, now) {
-  frameMs += (Math.min(dt, 250) - frameMs) * 0.1;
-  if (now - scaleAt < 1500) return false;
-  const next = frameMs > 45 ? Math.max(0.5, glScale * 0.8) : frameMs < 24 ? Math.min(1, glScale / 0.8) : glScale;
-  if (next === glScale) return false;
-  glScale = next;
+  if (windSkip || dt > 500) { windSkip = false; return false; }   // after a full render or a stall: not the wind's cost
+  windDts.push(dt);
+  if (windDts.length < 6) return false;
+  const m = windDts.sort((a, b) => a - b)[3], r = dpr * glScale;
+  windDts.length = 0;
+  let next = r;
+  if (m > 1.35 * ANIM_MS) {
+    next = Math.max(RES_MIN, r * Math.sqrt((0.9 * ANIM_MS) / m), scaleOk < r ? scaleOk : 0);
+    scaleHold = Math.min(60000, Math.max(2000, 2 * scaleHold));
+  } else if (m < 1.15 * ANIM_MS) {
+    scaleOk = r;
+    if (now - scaleAt > scaleHold) next = Math.min(dpr, r * 1.25);
+  }
+  if (Math.abs(next - r) < 0.01) return false;
+  glScale = next / dpr;
   scaleAt = now;
   sizeSky();
   return true;
@@ -404,7 +422,7 @@ function govern(dt, now) {
 
 /** Seconds of wind (wall clock, not the page's clock; wraps daily). */
 const windTime = () => (performance.now() / 1000) % 86400;
-const windBlows = () => st.layers.land && st.view.kind !== "chart" && !reducedMotion;
+const windBlows = () => st.layers.land && !!terrain && st.view.kind !== "chart" && !reducedMotion;
 
 function loop(now) {
   requestAnimationFrame(loop);
@@ -418,19 +436,26 @@ function loop(now) {
     if (st.speed > 1 || st.speed < 0) dirty = true;
     else if (now - lastDraw > 1000) dirty = true;
   }
+  if (windBlows() !== windOn) {           // the Landscape starts or stops moving
+    windOn = !windOn;
+    glScale = windOn ? Math.min(1, RES_START / dpr) : 1;
+    scaleHold = scaleOk = 0;
+    windDts.length = 0;
+    sizeSky();
+  }
   if (dirty) {
     dirty = false;
-    lastDraw = now;
+    lastDraw = lastWind = now;
+    windSkip = true;
     render();
     if (now - lastPanels > (st.playing && Math.abs(st.speed) > 1 ? 250 : 900)) { lastPanels = now; panels(); }
     if (now - lastHash > 700) { lastHash = now; writeHash(); }
-  } else if (glParams && windBlows() && now - lastWind > ANIM_MS) {
+  } else if (glParams && windOn && now - lastWind > ANIM_MS) {
     const resized = govern(now - lastWind, now);
     lastWind = now;
     glParams.time = windTime();
-    if (resized) { dirty = false; render(); } else gl.draw(glParams);
+    if (resized) { dirty = false; windSkip = true; render(); } else gl.draw(glParams);
   }
-  if (!windBlows() && glScale !== 1) { glScale = 1; sizeSky(); }
   if (st.layers.pulsars && blink.length) drawPulsarBlink($("fx").getContext("2d"), blink, now / 1000, dpr, st.view.w, st.view.h, reducedMotion);
   else if (loop.blinked) $("fx").getContext("2d").clearRect(0, 0, $("fx").width, $("fx").height);
   loop.blinked = st.layers.pulsars && blink.length > 0;
