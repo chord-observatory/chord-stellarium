@@ -870,7 +870,9 @@ float sunPast(vec3 p) {
         if (treeNear(q.xy, S, T) && dot(S, S) < 57600.0) { base = mapH(S) - T.x; seed = fract(S.x * 0.137 + S.y * 0.291); }
         else { S = vec2(1e5); T = vec3(0.0); }
       }
+#if TREES
       if (T.x > 0.0) d = treeSdf(q - vec3(S, base), T, seed, b);
+#endif
     }
     res = min(res, 6.0 * d / t);
     if (res < 0.0 || q.z > 45.0 + 0.2 * length(q.xy)) break;
@@ -921,7 +923,8 @@ float treeTrace(vec3 ro, vec3 rd, float t0, float pix, out vec3 col, out float t
   }
   vec3 p = ro + rd * t;
   vec2 hd = length(rd.xy) > 1e-5 ? normalize(rd.xy) : vec2(0.0, 1.0);
-  float shade = sunPast(vec3(S, base + T.x + 0.5)) * cloudShade(S);
+  float shade = sunPast(hit ? vec3(S, base + T.x + 0.5) : p + vec3(0.0, 0.0, 0.3 + 0.004 * t));
+  if (hit) shade *= cloudShade(S);
   if (!hit) {
     // The ground under the tree: the grassland (as groundAt has it there),
     // giving way to the tree's needles toward the trunk, in its own shade.
@@ -929,20 +932,24 @@ float treeTrace(vec3 ro, vec3 rd, float t0, float pix, out vec3 col, out float t
     float x = length(p.xy - S) / T.y + 0.4 * (noise(p.xy * 1.3 + seed * 50.0) - 0.5);
     vec3 alb = mix(vec3(0.22, 0.14, 0.075) * (0.75 + 0.5 * fine), strawAt(p.xy, p.xy, lod, clamp(1.5 - lod * 2.5, 0.0, 1.0), 0.0, fine), smoothstep(0.35, 1.0, x));
     alb = mix(alb, SNOW, snowAt(p, vec3(0.0, 0.0, 1.0), lod) * smoothstep(0.3, 1.0, x));   // less under the boughs
-    float sun = sunPast(p + vec3(0.0, 0.0, 0.3 + 0.004 * t)) * cloudShade(p.xy);
+    float sun = shade * cloudShade(p.xy);
     col = aired(litS(alb, vec3(0.0, 0.0, 1.0), sun, 0.78 * (0.6 + 0.4 * smoothstep(0.3, 1.0, x))), p, t, hd);
     return 1.0;
   }
-  float b2;
+  float b2, open = 1.0, lit = 1.0;                           // open: 0 deep among the boughs
   const vec2 k = vec2(1.0, -1.0);
-  const float h = 0.03;
-  vec3 n = normalize(k.xyy * treeSdf(q + k.xyy * h, T, seed, b2) + k.yyx * treeSdf(q + k.yyx * h, T, seed, b2)
-                   + k.yxy * treeSdf(q + k.yxy * h, T, seed, b2) + k.xxx * treeSdf(q + k.xxx * h, T, seed, b2));
-  float open = clamp(treeSdf(q + n * 0.45, T, seed, b2) / 0.45, 0.0, 1.0);          // 0 deep among the boughs
-  float lit = 1.0;
-  if (uSun.z > 0.0) for (int i = 1; i <= 4; i++) {
-    float s = 0.25 * float(i) * float(i);
-    lit = min(lit, 0.3 + 3.0 * treeSdf(q + n * 0.05 + uSun * s, T, seed, b2) / s);
+  vec3 n = vec3(0.0);
+  // The normal (four samples), how open it is here (one) and the tree's
+  // own shade (four), by one call in a loop: a compiler copies treeSdf
+  // in at every call, and the time it takes goes as the copies.
+  for (int j = 0; j < 9; j++) {
+    if (j > 4 && uSun.z <= 0.0) break;
+    vec3 o = j == 0 ? k.xyy : j == 1 ? k.yyx : j == 2 ? k.yxy : k.xxx;
+    float s = 0.25 * float(j - 4) * float(j - 4);
+    float v = treeSdf(q + (j < 4 ? o * 0.03 : j == 4 ? n * 0.45 : n * 0.05 + uSun * s), T, seed, b2);
+    if (j < 4) { n += o * v; if (j == 3) n = normalize(n); }
+    else if (j == 4) open = clamp(v / 0.45, 0.0, 1.0);
+    else lit = min(lit, 0.3 + 3.0 * v / s);
   }
   lit = clamp(lit, 0.0, 1.0);
   float lod = t * pix, near = clamp(1.5 - lod * 30.0, 0.0, 1.0);
@@ -1000,7 +1007,11 @@ vec3 groundAt(vec3 e, float t, float pix) {
     float onPad = 1.0 - smoothstep(-0.5, 0.5, max(pq.x, pq.y));
     float grassy = (1.0 - rock) * (1.0 - onPad) * (1.0 - woody);
     float inFlower = dot(uBloom.xyz, vec3(1.0, 1.0, 0.5));
+#if FLOWERS
     bool flowers = inFlower > 0.01 && grassy > 0.5;
+#else
+    const bool flowers = false;
+#endif
 
     // Grass.  Close by it stands in relief: the ray is marched down through
     // the bunches, bent by the wind, with flowers among them.  f: how high
@@ -1181,7 +1192,11 @@ vec3 groundAt(vec3 e, float t, float pix) {
     if (m.a > 0.5 && length(P) >= 750.0) {
       float share = clamp(2.0 * m.a - 1.0, 0.0, 1.0), across = t * pix, side, up;
       float rise = max(-dot(n.xy, hd) / max(n.z, 0.2) - e.z / max(length(e.xy), 1e-4), 0.03);
+#if FARTREES
       ft = farTrees(P, hd, rise, share, across, side, up);
+#else
+      side = up = 0.0;
+#endif
       ft = mix(ft, share * min(0.3 / rise, 0.9), smoothstep(3.0, 8.0, across));
       float kind = noise(P * 0.11 + 40.0);
       vec3 deep = mix(vec3(0.012, 0.024, 0.021), vec3(0.021, 0.028, 0.016), kind);
@@ -1235,6 +1250,9 @@ void main() {
     // through its gaps to what is behind (up to five trees deep).
     vec3 ro = vec3(0.0, 0.0, uEyeH);
     float t0 = 0.0, tOut;
+#if !TREES
+    tLand = hitGround(ro, e, t0, 11000.0);
+#else
     for (int pass = 0; pass < 6; pass++) {
       tLand = hitGround(ro, e, t0, 11000.0);
       if (tLand < 0.0 || pass == 5) break;                   // after five trees, what is there is ground
@@ -1243,6 +1261,7 @@ void main() {
       if (kind < 1.5) { onTree = true; break; }
       t0 = tOut;
     }
+#endif
     // Where the maps hold the terrain that sets the skyline, a ray that
     // misses it is in the sky.
     if (far < 0.5) below = false;
@@ -1340,8 +1359,11 @@ export class SkyGL {
 
   /** horizon: { alt: skyline altitude (deg) per azimuth step, from north
    *  through east; dist: distance (km) to the terrain that sets it, or
-   *  null: all beyond the maps } */
-  constructor(canvas, image, horizon) {
+   *  null: all beyond the maps };  cut: parts of the Landscape left out
+   *  of its shader ("trees": the near trees in 3D, "flowers", "far": the
+   *  far trees), to find what a slow compiler chokes on */
+  constructor(canvas, image, horizon, cut = []) {
+    this.cut = ["trees", "flowers", "far"].map((k) => `#define ${{ trees: "TREES", flowers: "FLOWERS", far: "FARTREES" }[k]} ${cut.includes(k) ? 0 : 1}\n`).join("");
     const gl = canvas.getContext("webgl", { antialias: false, premultipliedAlpha: false, preserveDrawingBuffer: true });
     if (!gl) throw new Error("WebGL is not available");
     this.gl = gl;
@@ -1350,7 +1372,7 @@ export class SkyGL {
     // browsers take all compiles in turn, so theirs start only when the
     // Landscape is wanted and a first frame is out (landProgram).
     // onReady: called once the Landscape can be drawn.
-    this.sky = link(gl, `#define LAND 0\n${FRAG}`);
+    this.sky = link(gl, `#define LAND 0\n${this.cut}${FRAG}`);
     this.parallel = gl.getExtension("KHR_parallel_shader_compile");
     this.onReady = null;
     const buf = gl.createBuffer();
@@ -1456,16 +1478,17 @@ export class SkyGL {
    *  work, after its frame is out: the compiles (this program and the
    *  maps'), in the background where the browser can
    *  (KHR_parallel_shader_compile), then the maps, a strip between
-   *  frames.  t: as for bake. */
+   *  frames; onStage is called with where that work is.  t: as for bake. */
   landProgram(t) {
     if (this.land === undefined) {
       this.land = null;
       const { gl } = this;
       const done = (job) => !this.parallel || gl.getProgramParameter(job.prog, this.parallel.COMPLETION_STATUS_KHR);
       const fail = (err) => console.error(`The Landscape failed: ${err.message}`);
-      let t0, land, strips;
+      let t0, land, strips, nStrip = 0;
       const strip = () => {
         try {
+          this.onStage?.(`building the terrain, ${Math.round((100 * ++nStrip) / MAP_NS.reduce((a, n) => a + n / BAKE_ROWS, 0))} %`);
           if (!strips.next().done) return setTimeout(strip, 0);
         } catch (err) { return fail(err); }
         this.bakeMs = performance.now() - t0 - this.compileMs;
@@ -1473,6 +1496,7 @@ export class SkyGL {
         this.onReady?.();
       };
       const poll = () => {
+        this.onStage?.(`compiling its shaders, ${Math.round((performance.now() - t0) / 1000)} s`);
         if (!done(this.landJob) || !done(this.mapJob)) return setTimeout(poll, 50);
         try { land = linked(gl, this.landJob); } catch (err) { return fail(err); }
         this.compileMs = performance.now() - t0;
@@ -1481,7 +1505,7 @@ export class SkyGL {
       };
       setTimeout(() => {
         t0 = performance.now();
-        this.landJob = start(gl, `#define LAND 1\n${FRAG}`);
+        this.landJob = start(gl, `#define LAND 1\n${this.cut}${FRAG}`);
         this.mapJob = start(gl, MAP_FRAG);
         poll();
       }, 150);

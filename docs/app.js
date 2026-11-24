@@ -1007,6 +1007,7 @@ function readHash() {
   st.view.alt0 = num("alt", -90, 90) ?? st.view.alt0;
   st.view.lon0 = num("lon", 0, 360);
   readHash.sel = q.get("sel");
+  readHash.cut = (q.get("cut") || "").split(",");
 }
 
 function writeHash() {
@@ -1026,6 +1027,7 @@ function writeHash() {
   const off = LAYERS.filter(([k, , d]) => !st.layers[k] && d).map(([k]) => k);
   if (on.length) q.set("on", on.join(","));
   if (off.length) q.set("off", off.join(","));
+  if (readHash.cut.some((k) => k)) q.set("cut", readHash.cut.join(","));
   const h = `#${q.toString().replace(/%2C/g, ",").replace(/%3A/g, ":").replace("kiosk=&", "kiosk&").replace(/kiosk=$/, "kiosk")}`;
   if (h !== location.hash) history.replaceState(null, "", h);
 }
@@ -1089,8 +1091,15 @@ async function main() {
   st.band = site.default_band_mhz.slice();
   readHash();
   resize();
-  try { gl = new SkyGL($("sky"), img, { alt: horizon.alt_deg, dist: horizon.flat ? null : horizon.dist_km }); } catch (err) { fail(`This page needs WebGL. ${err.message}`); return; }
-  gl.onReady = () => { dirty = true; landProbe(); };    // the Landscape's shaders have compiled
+  try { gl = new SkyGL($("sky"), img, { alt: horizon.alt_deg, dist: horizon.flat ? null : horizon.dist_km }, readHash.cut); } catch (err) { fail(`This page needs WebGL. ${err.message}`); return; }
+  const hint = $("hint").textContent;
+  gl.onStage = (s) => { $("hint").textContent = `Landscape: ${s}`; };
+  gl.onReady = () => {                                  // the Landscape can be drawn
+    dirty = true;
+    landProbe();
+    $("hint").textContent = `Landscape ready: shaders ${(gl.compileMs / 1000).toFixed(1)} s, terrain ${(gl.bakeMs / 1000).toFixed(1)} s`;
+    setTimeout(() => { $("hint").textContent = hint; }, 20000);
+  };
   overlay = new Overlay($("ov"));
   trace = new Trace($("trace"), img, skyMeta);
   wireControls();
