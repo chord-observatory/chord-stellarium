@@ -620,36 +620,6 @@ float mapEps(vec2 P) {
 float heightOf(vec4 m) { return m.r; }
 float mapH(vec2 P) { return heightOf(mapTexel(P)); }
 
-// Distance along rd from ro to the ground beyond t0, or -1.  The steps
-// grow with distance; they stay short near things that are thin.
-float hitGround(vec3 ro, vec3 rd, float t0, float tMax) {
-  float t = t0 + 0.2, tPrev = t0;
-  float climb = rd.z / max(length(rd.xy), 1e-4);
-  float d = 9.0;
-  for (int i = 0; i < 400; i++) {
-    vec3 p = ro + rd * t;
-    vec4 m = mapTexel(p.xy);
-    d = p.z - heightOf(m);
-    if (d < 0.0) {
-      float a = tPrev, b = t;
-      for (int k = 0; k < 6; k++) {
-        float mid = 0.5 * (a + b);
-        vec3 q = ro + rd * mid;
-        if (q.z > mapH(q.xy)) a = mid; else b = mid;
-      }
-      return 0.5 * (a + b);
-    }
-    if (max(abs(p.x), abs(p.y)) > ${glf(MAPS[3] * 0.98)} || (climb > 0.05 && p.z > 45.0 + 0.2 * length(p.xy))) return -1.0;
-    tPrev = t;
-    float st = max(0.045 * t + 0.08, 0.5 * d);
-    if (m.b > 0.01) st = min(st, max(max(5.4 * (1.0 - m.b), 0.5 * (d - 24.0)), min(0.4 * d, 0.7)));   // not past the nearest tree
-    if (d < 3.0) st = min(st, 0.012 * t + 0.35);             // nor past boulders and brush, low down
-    t += max(st, 0.003 * t + 0.1);
-    if (t > tMax) return -1.0;
-  }
-  return d < 12.0 ? t : -1.0;
-}
-
 // Sunlight the cumulus lets through to the ground at P (m).
 float cloudShade(vec2 P) {
   if (uSun.z < 0.02) return 1.0;
@@ -853,12 +823,27 @@ float treeSdf(vec3 q, vec3 T, float seed, out float bark) {
   return min(bole, leaf);
 }
 
+// A tree's bulk, for its shadow: the trunk, and the crown as one ragged
+// body with holes (treeSdf has every bough, and is too much code to have
+// here as well: see treeTrace).  q, T, seed: as treeSdf.
+float treeBulk(vec3 q, vec3 T, float seed) {
+  float ht = T.x, rad = T.y, r = length(q.xy), z = q.z / ht, leaf;
+  float bole = max(r - 0.035 * ht * (1.0 - 0.7 * z) - 0.045, q.z - 0.9 * ht);
+  float rag = (noise(q.xy * 1.1 + vec2(q.z * 1.7, seed * 40.0)) - 0.5) * 0.7 * rad;
+  if (T.z < 0.5) leaf = z < 0.1 ? 9.0 : z > 1.0 ? q.z - ht : (r - 0.62 * rad * (1.0 - (z - 0.1) / 0.9)) * 0.55;
+  else {
+    float cb = (0.45 + 0.13 * fract(seed * 7.3)) * ht, hc = 0.5 * (0.95 * ht - cb);
+    leaf = (length((q - vec3(0.0, 0.0, cb + hc)) / vec3(0.8 * rad, 0.8 * rad, hc)) - 1.0) * min(0.8 * rad, hc);
+  }
+  return min(bole, leaf + rag);
+}
+
 // Sunlight reaching p past the terrain, softened (0 .. 1).  Within 240 m
 // a tree's outline in the map is only its bound: inside it the tree itself
 // casts the shadow, with light through its gaps.
 float sunPast(vec3 p) {
   if (uSun.z < -0.03) return 0.0;
-  float res = 1.0, t = 0.5, base = 0.0, seed = 0.0, b;
+  float res = 1.0, t = 0.5, base = 0.0, seed = 0.0;
   vec2 S = vec2(1e5);
   vec3 T = vec3(0.0);
   for (int i = 0; i < 30; i++) {
@@ -871,7 +856,7 @@ float sunPast(vec3 p) {
         else { S = vec2(1e5); T = vec3(0.0); }
       }
 #if TREES
-      if (T.x > 0.0) d = treeSdf(q - vec3(S, base), T, seed, b);
+      if (T.x > 0.0) d = treeBulk(q - vec3(S, base), T, seed);
 #endif
     }
     res = min(res, 6.0 * d / t);
@@ -898,28 +883,53 @@ float treeTrace(vec3 ro, vec3 rd, float t0, float pix, out vec3 col, out float t
   float t = t0 - 0.15, tEnd = t0 + 2.6 * T.y / max(length(rd.xy), 0.3) + 1.0, bark, d = 1.0, above = 1.0;
   vec3 q;
   bool hit = false;
-  for (int i = 0; i < 56; i++) {
-    vec3 w = ro + rd * t;
-    q = w - vec3(S, base);
-    float x = length(q.xy) / T.y;
-    // The ground (in and about the outline the map holds it plus the outline).
-    if (q.z < 3.0) {
-      above = w.z - groundH(w.xy, S, T);
-      if (above < 0.0) { t += max(above / max(-rd.z, 0.05), -0.4); break; }
+  int at = 0;
+  // The march to the tree (56 steps at most), then at the hit its normal
+  // (four samples), how open it is there (one) and the tree's own shade
+  // (four).  All take treeSdf by the one call: a compiler copies it in
+  // at every call, and the time it takes goes as the copies.
+  float b2, open = 1.0, lit = 1.0, ahead = 0.0;             // open: 0 deep among the boughs
+  const vec2 k = vec2(1.0, -1.0);
+  vec3 n = vec3(0.0), o = vec3(0.0);
+  for (int i = 0; i < 65; i++) {
+    int j = i - at;                                           // the sample, once on the tree
+    vec3 qs;
+    float s = 0.25 * float(j - 4) * float(j - 4);
+    if (!hit) {
+      vec3 w = ro + rd * t;
+      q = w - vec3(S, base);
+      float x = length(q.xy) / T.y;
+      // The ground (in and about the outline the map holds it plus the outline).
+      if (q.z < 3.0) {
+        above = w.z - groundH(w.xy, S, T);
+        if (above < 0.0) { t += max(above / max(-rd.z, 0.05), -0.4); break; }
+      }
+      // Out of the outline and going away (or out of steps: beside the trunk
+      // they are short): on to what is behind, from where the ray leaves the
+      // circle of the outline and its blur in the map (a ray along its side
+      // would meet it again), not past the ground.
+      float rOut = T.y + 2.0 * mapEps(w.xy), aa = max(dot(rd.xy, rd.xy), 1e-6), bb = dot(q.xy, rd.xy);
+      ahead = max((-bb + sqrt(max(bb * bb - aa * (dot(q.xy, q.xy) - rOut * rOut), 0.0))) / aa, 0.3);
+      if (q.z < 3.0) ahead = clamp(above / max(-rd.z, 0.01) - 0.05, 0.0, ahead);
+      if ((dot(q.xy, rd.xy) > 0.0 && (x > 1.05 || q.z > 0.3 + outlineOf(x, T))) || i >= 55) { tOut = t + ahead; return 2.0; }
+      q.xy -= sway * (q.z / T.x) * (q.z / T.x);
+      qs = q;
+    } else {
+      if (j > 8 || (j > 4 && uSun.z <= 0.0)) break;
+      o = j == 0 ? k.xyy : j == 1 ? k.yyx : j == 2 ? k.yxy : k.xxx;
+      qs = q + (j < 4 ? o * 0.03 : j == 4 ? n * 0.45 : n * 0.05 + uSun * s);
     }
-    // Out of the outline and going away (or out of steps: beside the trunk
-    // they are short): on to what is behind, from where the ray leaves the
-    // circle of the outline and its blur in the map (a ray along its side
-    // would meet it again), not past the ground.
-    float rOut = T.y + 2.0 * mapEps(w.xy), aa = max(dot(rd.xy, rd.xy), 1e-6), bb = dot(q.xy, rd.xy);
-    float ahead = max((-bb + sqrt(max(bb * bb - aa * (dot(q.xy, q.xy) - rOut * rOut), 0.0))) / aa, 0.3);
-    if (q.z < 3.0) ahead = clamp(above / max(-rd.z, 0.01) - 0.05, 0.0, ahead);
-    if ((dot(q.xy, rd.xy) > 0.0 && (x > 1.05 || q.z > 0.3 + outlineOf(x, T))) || i == 55) { tOut = t + ahead; return 2.0; }
-    q.xy -= sway * (q.z / T.x) * (q.z / T.x);
-    d = treeSdf(q, T, seed, bark);
-    if (d < 0.6 * t * pix + 0.01) { hit = true; break; }
-    t += clamp(d, 0.03, 0.4);
-    if (t > tEnd) { tOut = t + ahead; return 2.0; }
+    float v = treeSdf(qs, T, seed, b2);
+    if (!hit) {
+      d = v;
+      bark = b2;
+      if (d < 0.6 * t * pix + 0.01) { hit = true; at = i + 1; continue; }
+      t += clamp(d, 0.03, 0.4);
+      if (t > tEnd) { tOut = t + ahead; return 2.0; }
+    }
+    else if (j < 4) { n += o * v; if (j == 3) n = normalize(n); }
+    else if (j == 4) open = clamp(v / 0.45, 0.0, 1.0);
+    else lit = min(lit, 0.3 + 3.0 * v / s);
   }
   vec3 p = ro + rd * t;
   vec2 hd = length(rd.xy) > 1e-5 ? normalize(rd.xy) : vec2(0.0, 1.0);
@@ -935,21 +945,6 @@ float treeTrace(vec3 ro, vec3 rd, float t0, float pix, out vec3 col, out float t
     float sun = shade * cloudShade(p.xy);
     col = aired(litS(alb, vec3(0.0, 0.0, 1.0), sun, 0.78 * (0.6 + 0.4 * smoothstep(0.3, 1.0, x))), p, t, hd);
     return 1.0;
-  }
-  float b2, open = 1.0, lit = 1.0;                           // open: 0 deep among the boughs
-  const vec2 k = vec2(1.0, -1.0);
-  vec3 n = vec3(0.0);
-  // The normal (four samples), how open it is here (one) and the tree's
-  // own shade (four), by one call in a loop: a compiler copies treeSdf
-  // in at every call, and the time it takes goes as the copies.
-  for (int j = 0; j < 9; j++) {
-    if (j > 4 && uSun.z <= 0.0) break;
-    vec3 o = j == 0 ? k.xyy : j == 1 ? k.yyx : j == 2 ? k.yxy : k.xxx;
-    float s = 0.25 * float(j - 4) * float(j - 4);
-    float v = treeSdf(q + (j < 4 ? o * 0.03 : j == 4 ? n * 0.45 : n * 0.05 + uSun * s), T, seed, b2);
-    if (j < 4) { n += o * v; if (j == 3) n = normalize(n); }
-    else if (j == 4) open = clamp(v / 0.45, 0.0, 1.0);
-    else lit = min(lit, 0.3 + 3.0 * v / s);
   }
   lit = clamp(lit, 0.0, 1.0);
   float lod = t * pix, near = clamp(1.5 - lod * 30.0, 0.0, 1.0);
@@ -1246,22 +1241,48 @@ void main() {
   vec3 tree;
   bool onTree = false;
   if (uDome > 0.5 && uGround > 0.5 && alt < hz + 4.0) {
-    // The ground; where that is a near tree's outline, the tree itself, or
-    // through its gaps to what is behind (up to five trees deep).
+    // The march over the maps.  A near tree's outline is in them: where
+    // the ray meets one, treeTrace has the tree itself, and through its
+    // gaps the march goes on to what is behind (up to five trees deep;
+    // after that, what is there is ground).  One loop, so that the march
+    // and treeTrace are in the shader once: a compiler may write a short
+    // loop round them out in full, and takes that many times as long.
     vec3 ro = vec3(0.0, 0.0, uEyeH);
-    float t0 = 0.0, tOut;
-#if !TREES
-    tLand = hitGround(ro, e, t0, 11000.0);
-#else
-    for (int pass = 0; pass < 6; pass++) {
-      tLand = hitGround(ro, e, t0, 11000.0);
-      if (tLand < 0.0 || pass == 5) break;                   // after five trees, what is there is ground
-      float kind = treeTrace(ro, e, tLand, pix, tree, tOut);
-      if (kind < 0.5) break;
-      if (kind < 1.5) { onTree = true; break; }
-      t0 = tOut;
-    }
+    float t = 0.2, tPrev = 0.0, d = 9.0, tOut;
+    float climb = e.z / max(length(e.xy), 1e-4);
+    int pass = 0;
+    bool done = false;
+    for (int i = 0; i < 480; i++) {
+      vec3 p = ro + e * t;
+      vec4 m = mapTexel(p.xy);
+      d = p.z - heightOf(m);
+      if (d < 0.0) {
+        float a = tPrev, b = t;
+        for (int k = 0; k < 6; k++) {
+          float mid = 0.5 * (a + b);
+          vec3 q = ro + e * mid;
+          if (q.z > mapH(q.xy)) a = mid; else b = mid;
+        }
+        tLand = 0.5 * (a + b);
+#if TREES
+        if (pass < 5) {
+          float kind = treeTrace(ro, e, tLand, pix, tree, tOut);
+          if (kind > 1.5) { pass++; tLand = -1.0; tPrev = tOut; t = tOut + 0.2; continue; }
+          onTree = kind > 0.5;
+        }
 #endif
+        done = true;
+        break;
+      }
+      if (max(abs(p.x), abs(p.y)) > ${glf(MAPS[3] * 0.98)} || (climb > 0.05 && p.z > 45.0 + 0.2 * length(p.xy))) { done = true; break; }
+      tPrev = t;
+      float st = max(0.045 * t + 0.08, 0.5 * d);
+      if (m.b > 0.01) st = min(st, max(max(5.4 * (1.0 - m.b), 0.5 * (d - 24.0)), min(0.4 * d, 0.7)));   // not past the nearest tree
+      if (d < 3.0) st = min(st, 0.012 * t + 0.35);             // nor past boulders and brush, low down
+      t += max(st, 0.003 * t + 0.1);
+      if (t > 11000.0) { done = true; break; }
+    }
+    if (!done && d < 12.0) tLand = t;
     // Where the maps hold the terrain that sets the skyline, a ray that
     // misses it is in the sky.
     if (far < 0.5) below = false;
