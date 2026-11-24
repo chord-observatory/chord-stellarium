@@ -27,6 +27,7 @@ const HZ_MIN = "-10.0", HZ_SPAN = "40.0";
 // across, and the span of heights (m) that each holds in 16 bits.
 const MAPS = [40, 250, 1400, 8000], MAP_NS = [1024, 2048, 2048, 2048];
 const MAP_H = [[-12, 40], [-40, 120], [-80, 460], [-260, 1100]];
+const BAKE_ROWS = 256;                   // rows of a map baked in one go (SkyGL.bake)
 // The real terrain (terrain.png; tools/make_terrain.py): half-width (m),
 // samples across, and metres per unit of R * 256 + G.
 const DEM = { half: 8000, n: 512, unit: 0.1 };
@@ -1399,74 +1400,102 @@ export class SkyGL {
     gl.activeTexture(gl.TEXTURE0);
   }
 
-  /** Bake the terrain into its height maps (MAPS), once; t: { arrayBox,
-   *  eyeH, terrain: the image terrain.png }. */
-  buildTerrain(t) {
-    if (this.maps) return;
+  /** Bake the terrain into its height maps (MAPS), a strip at a time:
+   *  each next() draws one strip and leaves the state as draw expects
+   *  it, so frames can be drawn in between.  t: { arrayBox, eyeH,
+   *  terrain: the image terrain.png }. */
+  *bake(t) {
     const { gl } = this, { prog, u } = linked(gl, this.mapJob), fb = gl.createFramebuffer();
+    const set = (tex) => {
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR],
+        [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+    };
+    const dem = gl.createTexture();                          // on unit 0 while a strip is drawn
+    set(dem);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, t.terrain);
+    gl.bindTexture(gl.TEXTURE_2D, this.skyTex);
     gl.useProgram(prog);
     gl.uniform1i(u.uNoise, 3);
-    const dem = gl.createTexture();                          // on unit 0 while the maps are built
-    gl.bindTexture(gl.TEXTURE_2D, dem);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, t.terrain);
-    for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR],
-      [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
     gl.uniform1i(u.uDem, 0);
     gl.uniform4fv(u.uArrayBox, t.arrayBox);
     gl.uniform1f(u.uEyeH, t.eyeH);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-    this.maps = MAPS.map((half, i) => {
+    for (let i = 0; i < MAPS.length; i++) {
+      const half = MAPS[i], n = MAP_NS[i], tex = gl.createTexture();
       gl.activeTexture(gl.TEXTURE4 + i);
-      const tex = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      const n = MAP_NS[i];
-      gl.viewport(0, 0, n, n);
+      set(tex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, n, n, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-      for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR],
-        [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
-      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
-      gl.uniform1f(u.uHalf, half);
-      gl.uniform1f(u.uTexel, 2 * half / n);
-      gl.uniform1f(u.uSize, n);
-      gl.uniform2f(u.uSpan, MAP_H[i][0], MAP_H[i][1]);
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
-      return tex;
-    });
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.activeTexture(gl.TEXTURE0);
+      for (let y = 0; y < n; y += BAKE_ROWS) {
+        gl.useProgram(prog);
+        gl.bindTexture(gl.TEXTURE_2D, dem);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+        gl.viewport(0, 0, n, n);
+        gl.enable(gl.SCISSOR_TEST);
+        gl.scissor(0, y, n, BAKE_ROWS);
+        gl.uniform1f(u.uHalf, half);
+        gl.uniform1f(u.uTexel, 2 * half / n);
+        gl.uniform1f(u.uSize, n);
+        gl.uniform2f(u.uSpan, MAP_H[i][0], MAP_H[i][1]);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        gl.readPixels(0, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4));   // wait for it
+        gl.disable(gl.SCISSOR_TEST);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.bindTexture(gl.TEXTURE_2D, this.skyTex);
+        yield;
+      }
+    }
     gl.deleteFramebuffer(fb);
     gl.deleteProgram(prog);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.skyTex);
     gl.deleteTexture(dem);
   }
 
-  /** The Landscape's program and uniforms, or null while it compiles (it
-   *  then calls onReady when done) or if it failed.  The compiles (this
-   *  and the maps') start after the frame that first asks, in the
-   *  background where the browser can (KHR_parallel_shader_compile). */
-  landProgram() {
+  /** The Landscape's program and uniforms, or null until it is ready (it
+   *  then calls onReady) or if it failed.  The first call starts the
+   *  work, after its frame is out: the compiles (this program and the
+   *  maps'), in the background where the browser can
+   *  (KHR_parallel_shader_compile), then the maps, a strip between
+   *  frames.  t: as for bake. */
+  landProgram(t) {
     if (this.land === undefined) {
+      this.land = null;
       const { gl } = this;
-      if (!this.compiled) {
-        if (!this.landJob) {
-          this.landJob = {};
-          const done = (job) => !this.parallel || gl.getProgramParameter(job.prog, this.parallel.COMPLETION_STATUS_KHR);
-          const poll = () => {
-            if (done(this.landJob) && done(this.mapJob)) { this.compiled = true; this.onReady?.(); }
-            else setTimeout(poll, 50);
-          };
-          setTimeout(() => {
-            this.landJob = start(gl, `#define LAND 1\n${FRAG}`);
-            this.mapJob = start(gl, MAP_FRAG);
-            poll();
-          }, 150);
-        }
-        return null;
-      }
-      try { this.land = linked(gl, this.landJob); }
-      catch (err) { console.error(`The Landscape's shader failed: ${err.message}`); this.land = null; }
+      const done = (job) => !this.parallel || gl.getProgramParameter(job.prog, this.parallel.COMPLETION_STATUS_KHR);
+      const fail = (err) => console.error(`The Landscape failed: ${err.message}`);
+      let t0, land, strips;
+      const strip = () => {
+        try {
+          if (!strips.next().done) return setTimeout(strip, 0);
+        } catch (err) { return fail(err); }
+        this.bakeMs = performance.now() - t0 - this.compileMs;
+        this.land = land;
+        this.onReady?.();
+      };
+      const poll = () => {
+        if (!done(this.landJob) || !done(this.mapJob)) return setTimeout(poll, 50);
+        try { land = linked(gl, this.landJob); } catch (err) { return fail(err); }
+        this.compileMs = performance.now() - t0;
+        strips = this.bake(t);
+        strip();
+      };
+      setTimeout(() => {
+        t0 = performance.now();
+        this.landJob = start(gl, `#define LAND 1\n${FRAG}`);
+        this.mapJob = start(gl, MAP_FRAG);
+        poll();
+      }, 150);
     }
     return this.land;
+  }
+
+  /** Wait until the GPU has drawn everything asked of it. */
+  sync() { this.gl.readPixels(0, 0, 1, 1, this.gl.RGBA, this.gl.UNSIGNED_BYTE, new Uint8Array(4)); }
+
+  /** The GPU's name, where the browser gives it. */
+  renderer() {
+    const x = this.gl.getExtension("WEBGL_debug_renderer_info");
+    return this.gl.getParameter(x ? x.UNMASKED_RENDERER_WEBGL : this.gl.RENDERER);
   }
 
   /** The daylight sky and its light (atmos.js skyModel). */
@@ -1486,8 +1515,7 @@ export class SkyGL {
    *       season: { bloom: [4], green, snow } (app.js season) } */
   draw(p) {
     const { gl } = this, d = p.dpr, cam = p.cam;
-    const land = p.land && this.landProgram();
-    if (land) this.buildTerrain(p);
+    const land = p.land && this.landProgram(p);
     const { prog, u } = land || this.sky;                    // the sky alone until the Landscape's is compiled
     gl.useProgram(prog);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
