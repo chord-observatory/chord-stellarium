@@ -1345,11 +1345,11 @@ export class SkyGL {
     if (!gl) throw new Error("WebGL is not available");
     this.gl = gl;
     this.canvas = canvas;
-    // The sky alone at once; the Landscape's, larger, in the background
-    // where the browser can (KHR_parallel_shader_compile), until it is
-    // needed.  onReady: called once the Landscape's can be drawn.
+    // The sky alone at once.  The Landscape's shaders are larger, and some
+    // browsers take all compiles in turn, so theirs start only when the
+    // Landscape is wanted and a first frame is out (landProgram).
+    // onReady: called once the Landscape can be drawn.
     this.sky = link(gl, `#define LAND 0\n${FRAG}`);
-    this.landJob = start(gl, `#define LAND 1\n${FRAG}`);
     this.parallel = gl.getExtension("KHR_parallel_shader_compile");
     this.onReady = null;
     const buf = gl.createBuffer();
@@ -1403,7 +1403,7 @@ export class SkyGL {
    *  eyeH, terrain: the image terrain.png }. */
   buildTerrain(t) {
     if (this.maps) return;
-    const { gl } = this, { prog, u } = link(gl, MAP_FRAG), fb = gl.createFramebuffer();
+    const { gl } = this, { prog, u } = linked(gl, this.mapJob), fb = gl.createFramebuffer();
     gl.useProgram(prog);
     gl.uniform1i(u.uNoise, 3);
     const dem = gl.createTexture();                          // on unit 0 while the maps are built
@@ -1441,18 +1441,25 @@ export class SkyGL {
   }
 
   /** The Landscape's program and uniforms, or null while it compiles (it
-   *  then calls onReady when done) or if it failed. */
+   *  then calls onReady when done) or if it failed.  The compiles (this
+   *  and the maps') start after the frame that first asks, in the
+   *  background where the browser can (KHR_parallel_shader_compile). */
   landProgram() {
     if (this.land === undefined) {
       const { gl } = this;
-      if (this.parallel && !gl.getProgramParameter(this.landJob.prog, this.parallel.COMPLETION_STATUS_KHR)) {
-        if (!this.polling) {
-          this.polling = true;
+      if (!this.compiled) {
+        if (!this.landJob) {
+          this.landJob = {};
+          const done = (job) => !this.parallel || gl.getProgramParameter(job.prog, this.parallel.COMPLETION_STATUS_KHR);
           const poll = () => {
-            if (gl.getProgramParameter(this.landJob.prog, this.parallel.COMPLETION_STATUS_KHR)) { this.polling = false; this.onReady?.(); }
+            if (done(this.landJob) && done(this.mapJob)) { this.compiled = true; this.onReady?.(); }
             else setTimeout(poll, 50);
           };
-          setTimeout(poll, 50);
+          setTimeout(() => {
+            this.landJob = start(gl, `#define LAND 1\n${FRAG}`);
+            this.mapJob = start(gl, MAP_FRAG);
+            poll();
+          }, 150);
         }
         return null;
       }
@@ -1478,9 +1485,10 @@ export class SkyGL {
    *       [east, north, half east, half north], sunOverHills (0 .. 1),
    *       season: { bloom: [4], green, snow } (app.js season) } */
   draw(p) {
-    if (p.land) this.buildTerrain(p);
     const { gl } = this, d = p.dpr, cam = p.cam;
-    const { prog, u } = (p.land && this.landProgram()) || this.sky;     // the sky alone until the Landscape's is compiled
+    const land = p.land && this.landProgram();
+    if (land) this.buildTerrain(p);
+    const { prog, u } = land || this.sky;                    // the sky alone until the Landscape's is compiled
     gl.useProgram(prog);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.uniform2f(u.uRes, this.canvas.width, this.canvas.height);
