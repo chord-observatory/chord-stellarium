@@ -18,6 +18,7 @@
 
 import { STEREO, MOLL, CAR } from "./proj.js";
 import { LUT_W, LUT_H, LUT_ALT_MIN, LUT_ALT_SPAN } from "./atmos.js";
+import { EYE_AT, SITE_BOX } from "./layout.js";
 
 export const BAND_SAMPLES = 24;
 // Skyline texture encoding: altitude HZ_MIN .. HZ_MIN + HZ_SPAN deg in 16 bits.
@@ -122,6 +123,10 @@ float smax(float a, float b, float k) { float t = clamp(0.5 + 0.5 * (a - b) / k,
 
 // The map builder's terrain.
 const TERRAIN = `
+// The site: its buildings and the arrays, on the level valley floor
+// (layout.js SITE_BOX): centre and half sizes (m) from the eye.
+const vec4 SITE = vec4(${SITE_BOX.map(glf).join(", ")});
+float siteDist(vec2 P) { vec2 q = abs(P - SITE.xy) - SITE.zw; return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0); }
 float rnd(vec2 g) { return texture2D(uNoise, (g + 0.5) / 256.0).r; }
 
 // Value noise with its gradient.
@@ -151,9 +156,10 @@ float eroded(vec2 p, float lod) {
 }
 
 // The real terrain's height above the site's ground (m) at P, smoothed
-// over its 30 m samples.
+// over its 30 m samples.  The DEM is centred on the site's position, the
+// maps on the eye (layout.js EYE_AT).
 float demAt(vec2 P) {
-  vec4 t = texture2D(uDem, vec2(0.5 + P.x / ${glf(2 * DEM.half)}, 0.5 - P.y / ${glf(2 * DEM.half)}));
+  vec4 t = texture2D(uDem, vec2(0.5 + (P.x + ${glf(EYE_AT[0])}) / ${glf(2 * DEM.half)}, 0.5 - (P.y + ${glf(EYE_AT[1])}) / ${glf(2 * DEM.half)}));
   return (t.r * 65280.0 + t.g * 255.0) * ${glf(DEM.unit)};
 }
 float demSmooth(vec2 P) {
@@ -162,11 +168,13 @@ float demSmooth(vec2 P) {
 }
 float realH(vec2 P) { return demSmooth(P) - demSmooth(vec2(0.0)); }
 
-// The chance that a tree stands at S: stands and stragglers near by; on the
-// real hills, more on slopes that face north and higher up.
+// The chance that a tree stands at S: few on the open valley floor about
+// the site (as the user's aerial photograph has it), stands and stragglers
+// further out; on the real hills, more on slopes that face north and
+// higher up.
 float treesAt(vec2 S) {
   float sw = fbm(S * 0.006 + 70.0, 0.0);
-  float p = smoothstep(0.47, 0.64, sw) * 0.5 + smoothstep(0.38, 0.47, sw) * 0.05;
+  float p = (smoothstep(0.47, 0.64, sw) * 0.5 + smoothstep(0.38, 0.47, sw) * 0.05) * mix(0.08, 1.0, smoothstep(250.0, 550.0, siteDist(S)));
   float real = smoothstep(260.0, 700.0, length(S));
   if (real > 0.0) {
     float north = (demSmooth(S - vec2(0.0, 45.0)) - demSmooth(S + vec2(0.0, 45.0))) / 90.0;   // the slope down to the north
@@ -182,9 +190,8 @@ float treesAt(vec2 S) {
 // brush, 1 tree; beyond 750 m 0.5 .. 1 is the share of trees).  Near
 // the observer it is made up: a plain of low swells; knolls with crags,
 // boulders and stands of fir.  From 260 m to 700 m out it turns into the
-// real terrain, with made-up detail and trees.  The near part is levelled for
-// the array's pad and the sight line to the array;
-// sagebrush in patches; and the knoll the observer stands on.
+// real terrain, with made-up detail and trees.  The site (SITE) is level
+// and clear, the array's pad flat; sagebrush in patches.
 vec3 terrainAt(vec2 P) {
   float r = length(P), px = uTexel;
   float swell = (fbm(P * 0.004 + 3.1, px * 0.004) - 0.5) * 18.0;
@@ -209,16 +216,15 @@ vec3 terrainAt(vec2 P) {
 
   vec2 q = abs(P - uArrayBox.xy) - uArrayBox.zw;
   float pad = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
-  float level = max(under(4.0, 30.0, pad), under(26.0, 48.0, segDist(P, vec2(0.0), uArrayBox.xy)));
+  float site = siteDist(P), level = under(10.0, 120.0, site);
   h = smax(h, -0.2, 3.0);                                   // dry hollows silt up into flats
   h = mix(h, min(h, 0.0) * 0.3, level);
   h += (fbm(P * 0.21 + 14.0, px * 0.21) - 0.5) * 0.5;       // hummocks
   h = mix(h, 0.0, under(0.0, 8.0, pad));                    // the pad is level with the dishes' feet
 
-  float m = max(1.0 - r * r / 2500.0, 0.0);                 // the observer's knoll, 50 m across
-  if (m > 0.0) h = max(h, (uEyeH - 1.7) * m * m);
+  h = mix(h, 0.0, under(0.0, 10.0, site) * 0.8);            // the site itself, all but level
 
-  float dry = smoothstep(0.0, 4.0, pad);
+  float dry = smoothstep(0.0, 4.0, pad) * smoothstep(-20.0, 0.0, site);   // no boulders or brush on the site
   float stone = clamp(outcrop * 2.5, 0.0, 1.0) * (1.0 - level);
   float woody = 0.0, tall = 0.0;
   vec2 off;
@@ -253,8 +259,7 @@ vec3 terrainAt(vec2 P) {
       vec2 g = g0 + vec2(float(i), float(j));
       vec4 t = texture2D(uNoise, (g + 0.5) / 256.0);
       vec2 S = (g + t.gb) * 7.0;
-      vec2 sq = abs(S - uArrayBox.xy) - uArrayBox.zw;
-      float open = step(55.0, length(S)) * step(34.0, max(sq.x, sq.y)) * step(52.0, segDist(S, vec2(0.0), uArrayBox.xy));
+      float open = step(40.0, siteDist(S));                // none on the site
       if (t.r < treesAt(S) * open && !(r < 800.0 && crowded(g, t))) {
         // In the map a tree is only its outline, a cone or a dome; close by
         // the sky shader traces the tree inside it (treeTrace).

@@ -6,7 +6,8 @@ import { SkyGL } from "./skygl.js";
 import { Overlay, drawPulsarBlink, setFont, COLORS } from "./overlay.js";
 import { Trace } from "./trace.js";
 import { skyModel } from "./atmos.js";
-import { drawDishes, EYE_M, ARRAY_AT } from "./dishes.js";
+import { Models } from "./models.js";
+import { EYE_M, arrayAt, dishes, BUILDINGS } from "./layout.js";
 
 const $ = (id) => document.getElementById(id);
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
@@ -28,6 +29,7 @@ const LAYERS = [
   ["trace", "Drift trace", true, "rgb(255,205,120)"],
   ["horizon", "Horizon", true, "rgb(150,220,175)"],
   ["land", "Landscape", true, "#c8b27a"],
+  ["chord", "Full CHORD (planned)", false, "#6f9be0"],
   ["ecliptic", "Ecliptic", true, "rgb(240,205,110)"],
   ["grid_eq", "RA / Dec grid", false, "rgb(150,175,225)"],
   ["grid_gal", "Galactic grid", false, "rgb(225,165,125)"],
@@ -57,7 +59,7 @@ const st = {
   selected: null,
 };
 
-let site, cat, frbCat, skyMeta, horizon, gl, overlay, trace, data, cam, frame, glParams, dpr = 1;
+let site, cat, frbCat, skyMeta, horizon, gl, models, overlay, trace, data, cam, frame, glParams, dpr = 1;
 let glScale = 1, scaleAt = 0, scaleHold = 0, scaleOk = 0, windOn = false, windSkip = false, windDts = [], windStalls = 0;   // the sky canvas's resolution while the wind blows (see govern)
 let dirty = true, lastDraw = 0, lastWind = 0, lastPanels = 0, lastHash = 0, hits = [], blink = [];
 const nameIndex = new Map();             // search names -> objects
@@ -351,15 +353,14 @@ function render() {
   };
   if (frame.sky) gl.setSky(frame.sky);
   gl.draw(glParams);
-  const fg = $("fg").getContext("2d");
-  if (onSite && st.layers.land) {
-    drawDishes(fg, {
-      cam, dpr, ob: frame.ob, array: site.array, bore: frame.boreEnu,
+  if (models && onSite && st.layers.land) {
+    models.draw({
+      cam, ob: frame.ob, dish: site.array, dishes: dishes(site.array, st.layers.chord), buildings: BUILDINGS, bore: frame.boreEnu,
       light: { sun: frame.sun.enu, moon: frame.moon.enu, sunLin: frame.sky.sunLin.map((x) => x * frame.sunOverHills),
         ambLin: frame.sky.ambLin, moonLin: frame.moonLin, strength: frame.sky.strength,
         cloud: (P) => gl.cloudShade(P, frame.sun.enu, glParams.time, WIND) },
     });
-  } else fg.clearRect(0, 0, $("fg").width, $("fg").height);
+  } else models?.clear();
   const centre = unproject(cam, v.w / 2, v.h / 2);
   const res = overlay.draw({
     cam, dpr, ob: frame.ob, zoom, layers: { ...st.layers, beam: st.beamMode !== "off" }, data, skyline,
@@ -397,7 +398,8 @@ function drawTrace() {
 /** The array's pad with a margin: centre east, north and half-sizes (m) from the observer. */
 function arrayBox() {
   const a = site.array, r = a.dish_diameter_m / 2 + 3;
-  return [ARRAY_AT[0], ARRAY_AT[1], ((a.nx - 1) / 2) * a.dx_m + r, ((a.ny - 1) / 2) * a.dy_m + r];
+  const at = arrayAt(a);
+  return [at[0], at[1], ((a.nx - 1) / 2) * a.dx_m + r, ((a.ny - 1) / 2) * a.dy_m + r];
 }
 
 function sizeSky() {
@@ -1094,6 +1096,7 @@ async function main() {
   resize();
   try { gl = new SkyGL($("sky"), img, { alt: horizon.alt_deg, dist: horizon.flat ? null : horizon.dist_km }, readHash.cut); } catch (err) { fail(`This page needs WebGL. ${err.message}`); return; }
   const hint = $("hint").textContent;
+  try { models = new Models($("fg")); } catch (err) { console.error(`The site's models: ${err.message}`); }
   gl.onStage = (s) => { $("hint").textContent = `Landscape: ${s}`; };
   gl.onReady = () => {                                  // the Landscape can be drawn
     dirty = true;

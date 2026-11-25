@@ -26,7 +26,8 @@ choice (Tau A, Cyg A or a declination), not read from the dishes.
 | `docs/proj.js` | Projections: stereographic camera, Mollweide, plate carrée | by hand |
 | `docs/skygl.js` | WebGL: the radio sky, daylight, the band-drawn beam, the ground; the made-up clouds and terrain | by hand |
 | `docs/atmos.js` | The daylight and twilight sky (scattering model) and its light, tabulated per Sun altitude | by hand |
-| `docs/dishes.js` | The 64 dishes, tilted to the pointing, on a 2D canvas | by hand |
+| `docs/models.js` | The site's dishes (tilted to the pointing) and buildings, as meshes in a small WebGL pass of their own | by hand |
+| `docs/layout.js` | The site: the eye (on the block house), the pathfinder and the full array's dishes, the buildings; sources in its header | **by hand** |
 | `docs/moon.png` | The Moon's near side (NASA SVS CGI Moon Kit, LRO; public domain) | `tools/make_moon.py` |
 | `docs/terrain.png` | Real terrain heights 8 km around the site, for the Landscape | `tools/make_terrain.py` |
 | `docs/overlay.js` | Lines, markers, labels, pulsar blinking | by hand |
