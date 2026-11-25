@@ -1,0 +1,34 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Shader compile times</title>
+<style>body { font: 14px/1.5 ui-monospace, monospace; background: #111; color: #ddd; padding: 16px; } </style>
+<p>Compiles the Landscape's shader with parts left out and times each, smallest first. A line can take minutes; leave the tab open, then copy everything below.</p>
+<pre id="out"></pre>
+<canvas id="c" width="16" height="16" hidden></canvas>
+<script type="module">
+import { CUTS, fragment, compileMs } from "./skygl.js";
+const out = document.getElementById("out"), say = (s) => { out.textContent += s; };
+const gl = document.getElementById("c").getContext("webgl", { powerPreference: "high-performance" });
+const x = gl.getExtension("WEBGL_debug_renderer_info");
+say(`${navigator.userAgent}\n${gl.getParameter(x ? x.UNMASKED_RENDERER_WEBGL : gl.RENDERER)}\n\n`);
+const all = Object.keys(CUTS), trees = ["limbs", "foot", "under", "shade", "bulk"];
+const jobs = [
+  ["sky alone", 0, []],
+  ["no trees, flowers, far trees", 1, ["trees", "flowers", "far"]],
+  ["no trees", 1, ["trees"]],
+  ["trees at their least", 1, trees],
+  ...trees.map((k) => [`trees at their least + ${k}`, 1, trees.filter((t) => t !== k)]),
+  ...trees.map((k) => [`all but ${k}`, 1, [k]]),
+  ["all but flowers", 1, ["flowers"]],
+  ["all but far trees", 1, ["far"]],
+  ["everything", 1, []],
+];
+const salt = Math.random();           // a new shader each time, past any cache
+for (const [name, land, cut] of jobs) {
+  say(`${name.padEnd(34)} `);
+  await new Promise((r) => setTimeout(r, 60));
+  try { say(`${(compileMs(gl, `${fragment(land, cut)}\n// ${salt}`) / 1000).toFixed(2)} s\n`); }
+  catch (err) { say(`failed: ${err.message.slice(0, 200)}\n`); }
+}
+say("\ndone\n");
+</script>

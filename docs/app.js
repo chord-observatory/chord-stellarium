@@ -1007,7 +1007,10 @@ function readHash() {
   st.view.alt0 = num("alt", -90, 90) ?? st.view.alt0;
   st.view.lon0 = num("lon", 0, 360);
   readHash.sel = q.get("sel");
-  readHash.cut = (q.get("cut") || "").split(",");
+  // On Windows the browsers compile shaders with Direct3D's compiler, which
+  // takes minutes over the near trees (TODO: until they are made lighter).
+  readHash.cutGiven = q.has("cut");
+  readHash.cut = q.has("cut") ? q.get("cut").split(",") : /Windows/.test(navigator.userAgent) ? ["trees"] : [];
 }
 
 function writeHash() {
@@ -1027,7 +1030,7 @@ function writeHash() {
   const off = LAYERS.filter(([k, , d]) => !st.layers[k] && d).map(([k]) => k);
   if (on.length) q.set("on", on.join(","));
   if (off.length) q.set("off", off.join(","));
-  if (readHash.cut.some((k) => k)) q.set("cut", readHash.cut.join(","));
+  if (readHash.cutGiven) q.set("cut", readHash.cut.join(","));
   const h = `#${q.toString().replace(/%2C/g, ",").replace(/%3A/g, ":").replace("kiosk=&", "kiosk&").replace(/kiosk=$/, "kiosk")}`;
   if (h !== location.hash) history.replaceState(null, "", h);
 }

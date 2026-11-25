@@ -799,6 +799,7 @@ float treeSdf(vec3 q, vec3 T, float seed, out float bark) {
     reach *= 0.45 + 0.55 * smoothstep(0.2, 0.55, noise(dir * 2.4 + vec2(k * 7.0 + seed * 9.0, q.z * 1.7)));
     leaf = zz < 0.0 ? 9.0 : zz > 1.0 ? q.z - ht : (r - reach) * 0.55;
   } else {
+#if LIMBS
     bole = max(r - 0.035 * ht * (1.0 - 0.6 * z) - 0.05, q.z - 0.9 * ht);
     float cb = (0.45 + 0.13 * fract(seed * 7.3)) * ht;      // where the crown starts
     leaf = max(r - rad, cb - 0.5 * rad - q.z);               // away from the crown, its bound will do
@@ -818,6 +819,19 @@ float treeSdf(vec3 q, vec3 T, float seed, out float bark) {
       float tuft = noise(q.xy * 2.6 + vec2(q.z * 2.1, seed * 40.0)) + 0.5 * noise(vec2(q.x - q.y, q.z) * 6.3 + 9.0);
       leaf = (leaf + (tuft - 0.75) * 0.22 * rad) * 0.7;
     }
+#else
+    // A plain crown: one body and three boughs.
+    bole = max(r - 0.04 * ht * (1.0 - 0.6 * z) - 0.05, q.z - 0.8 * ht);
+    vec3 c = vec3(0.0, 0.0, 0.72 * ht);
+    leaf = (length((q - c) / vec3(0.62 * rad, 0.62 * rad, 0.26 * ht)) - 1.0) * 0.55 * rad;
+    for (int i = 0; i < 3; i++) {
+      float a = seed * 6.28 + float(i) * 2.1;
+      c = vec3(cos(a) * 0.38 * rad, sin(a) * 0.38 * rad, (0.48 + 0.08 * float(i)) * ht);
+      leaf = min(leaf, (length((q - c) / vec3(0.4 * rad, 0.4 * rad, 0.13 * ht)) - 1.0) * 0.36 * rad);
+    }
+    float lump = noise(q.xy * 1.6 + vec2(q.z * 1.3, seed * 40.0)) + noise(vec2(q.x - q.y, q.z * 1.5) * 1.4 + 9.0);
+    leaf = (leaf + (lump - 1.0) * 0.28 * rad) * 0.7;
+#endif
   }
   bark = step(bole, leaf);
   return min(bole, leaf);
@@ -855,7 +869,7 @@ float sunPast(vec3 p) {
         if (treeNear(q.xy, S, T) && dot(S, S) < 57600.0) { base = mapH(S) - T.x; seed = fract(S.x * 0.137 + S.y * 0.291); }
         else { S = vec2(1e5); T = vec3(0.0); }
       }
-#if TREES
+#if TREES && BULK
       if (T.x > 0.0) d = treeBulk(q - vec3(S, base), T, seed);
 #endif
     }
@@ -900,10 +914,12 @@ float treeTrace(vec3 ro, vec3 rd, float t0, float pix, out vec3 col, out float t
       q = w - vec3(S, base);
       float x = length(q.xy) / T.y;
       // The ground (in and about the outline the map holds it plus the outline).
+#if FOOT
       if (q.z < 3.0) {
         above = w.z - groundH(w.xy, S, T);
         if (above < 0.0) { t += max(above / max(-rd.z, 0.05), -0.4); break; }
       }
+#endif
       // Out of the outline and going away (or out of steps: beside the trunk
       // they are short): on to what is behind, from where the ray leaves the
       // circle of the outline and its blur in the map (a ray along its side
@@ -915,6 +931,10 @@ float treeTrace(vec3 ro, vec3 rd, float t0, float pix, out vec3 col, out float t
       q.xy -= sway * (q.z / T.x) * (q.z / T.x);
       qs = q;
     } else {
+#if !SHADE
+      n = vec3(0.0, 0.0, 1.0);
+      break;
+#endif
       if (j > 8 || (j > 4 && uSun.z <= 0.0)) break;
       o = j == 0 ? k.xyy : j == 1 ? k.yyx : j == 2 ? k.yxy : k.xxx;
       qs = q + (j < 4 ? o * 0.03 : j == 4 ? n * 0.45 : n * 0.05 + uSun * s);
@@ -935,6 +955,9 @@ float treeTrace(vec3 ro, vec3 rd, float t0, float pix, out vec3 col, out float t
   vec2 hd = length(rd.xy) > 1e-5 ? normalize(rd.xy) : vec2(0.0, 1.0);
   float shade = sunPast(hit ? vec3(S, base + T.x + 0.5) : p + vec3(0.0, 0.0, 0.3 + 0.004 * t));
   if (hit) shade *= cloudShade(S);
+#if !UNDER
+  if (!hit) { col = vec3(0.2, 0.17, 0.1); return 1.0; }
+#endif
   if (!hit) {
     // The ground under the tree: the grassland (as groundAt has it there),
     // giving way to the tree's needles toward the trunk, in its own shade.
@@ -1351,6 +1374,25 @@ const link = (gl, frag) => linked(gl, start(gl, frag));
 // Row-major 3x3 (astro.js) -> column-major for uniformMatrix3fv.
 const glMat = (m) => new Float32Array([m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]]);
 
+/** Parts of the Landscape that can be left out of its shader, to find
+ *  what a slow compiler (Direct3D's, on Windows) is slow on, and to do
+ *  without it there: the near trees in 3D; of those, the pines' limbs
+ *  (a plain crown instead), the ground at a tree's foot, the ground
+ *  under it, its shading samples, its shadow's shape; the flowers; the
+ *  far trees. */
+export const CUTS = { trees: "TREES", limbs: "LIMBS", foot: "FOOT", under: "UNDER", shade: "SHADE", bulk: "BULK", flowers: "FLOWERS", far: "FARTREES" };
+
+/** The sky's fragment shader: land 1 with the Landscape, 0 without. */
+export const fragment = (land, cut = []) =>
+  `#define LAND ${land}\n${Object.entries(CUTS).map(([k, m]) => `#define ${m} ${cut.includes(k) ? 0 : 1}\n`).join("")}${FRAG}`;
+
+/** Milliseconds to compile and link a fragment shader (blocking). */
+export function compileMs(gl, frag) {
+  const t0 = performance.now(), { prog } = linked(gl, start(gl, frag));
+  gl.deleteProgram(prog);
+  return performance.now() - t0;
+}
+
 export class SkyGL {
   /** Sunlight the cumulus lets through to the ground at P (m east, north of
    *  the observer): the shader's cloudShade(), for what is drawn outside it
@@ -1381,10 +1423,9 @@ export class SkyGL {
   /** horizon: { alt: skyline altitude (deg) per azimuth step, from north
    *  through east; dist: distance (km) to the terrain that sets it, or
    *  null: all beyond the maps };  cut: parts of the Landscape left out
-   *  of its shader ("trees": the near trees in 3D, "flowers", "far": the
-   *  far trees), to find what a slow compiler chokes on */
+   *  of its shader (CUTS) */
   constructor(canvas, image, horizon, cut = []) {
-    this.cut = ["trees", "flowers", "far"].map((k) => `#define ${{ trees: "TREES", flowers: "FLOWERS", far: "FARTREES" }[k]} ${cut.includes(k) ? 0 : 1}\n`).join("");
+    this.cut = cut;
     const gl = canvas.getContext("webgl", { antialias: false, premultipliedAlpha: false, preserveDrawingBuffer: true, powerPreference: "high-performance" });
     if (!gl) throw new Error("WebGL is not available");
     this.gl = gl;
@@ -1393,7 +1434,7 @@ export class SkyGL {
     // browsers take all compiles in turn, so theirs start only when the
     // Landscape is wanted and a first frame is out (landProgram).
     // onReady: called once the Landscape can be drawn.
-    this.sky = link(gl, `#define LAND 0\n${this.cut}${FRAG}`);
+    this.sky = link(gl, fragment(0, this.cut));
     this.parallel = gl.getExtension("KHR_parallel_shader_compile");
     this.onReady = null;
     const buf = gl.createBuffer();
@@ -1526,7 +1567,7 @@ export class SkyGL {
       };
       setTimeout(() => {
         t0 = performance.now();
-        this.landJob = start(gl, `#define LAND 1\n${this.cut}${FRAG}`);
+        this.landJob = start(gl, fragment(1, this.cut));
         this.mapJob = start(gl, MAP_FRAG);
         poll();
       }, 150);
