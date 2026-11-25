@@ -14,9 +14,10 @@
  *  of its weather mast. */
 export const EYE_M = 10;
 
-/** The eye, over the block house's south wall (so its roof does not fill
- *  the view south), in the site frame. */
-export const EYE_AT = [-87.9, 155.0];
+/** The eye, 2 m south of the block house's south wall (so its roof does
+ *  not fill the view south, and the eye is not over it), in the site
+ *  frame. */
+export const EYE_AT = [-87.9, 152.5];
 
 /** Site frame (m) to metres east and north of the eye. */
 export const toEye = ([e, n]) => [e - EYE_AT[0], n - EYE_AT[1]];

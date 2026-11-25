@@ -47,7 +47,7 @@ void main() {
   if (uFlat > 0.5) p -= uSun * (aPos.z - 0.03) / uSun.z;
   vPos = p; vNorm = aNorm; vMat = aMat; vLoc = aLoc;
   vec3 c = uCam * normalize(p);
-  if (c.z < -0.5) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }   // behind the eye
+  if (c.z < -0.95) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }  // straight behind the eye (as proj.js)
   vec2 q = 2.0 / (1.0 + c.z) * c.xy;                     // stereographic, as proj.js
   vec2 s = uCentre + uScale * (q - uPan) * vec2(1.0, -1.0);
   gl_Position = vec4(2.0 * s.x / uSize.x - 1.0, 1.0 - 2.0 * s.y / uSize.y, 2.0 * length(p) / ${FAR_M.toFixed(1)} - 1.0, 1.0);
@@ -138,7 +138,16 @@ function program(gl) {
 class Mesh {
   constructor() { this.v = []; }
   vert(p, n, mat, loc = [0, 0]) { this.v.push(p[0], p[1], p[2], n[0], n[1], n[2], mat, loc[0], loc[1]); }
-  tri(a, b, c, n, mat) { for (const p of [a, b, c]) this.vert(p, n, mat); }
+  /** A triangle, split into pieces no longer than 3 m a side: the
+   *  projection bends straight lines, and a piece reaching behind the eye
+   *  would not be drawn. */
+  tri(a, b, c, n, mat) {
+    const len = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]);
+    const e = [len(a, b), len(b, c), len(c, a)], k = e.indexOf(Math.max(...e));
+    if (e[k] <= 3) { for (const p of [a, b, c]) this.vert(p, n, mat); return; }
+    const [p, q, r] = [[a, b, c], [b, c, a], [c, a, b]][k], m = [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2, (p[2] + q[2]) / 2];
+    this.tri(p, m, r, n, mat); this.tri(m, q, r, n, mat);
+  }
   quad(a, b, c, d, mat) {
     const n = norm(cross(sub(b, a), sub(d, a)));
     this.tri(a, b, c, n, mat); this.tri(a, c, d, n, mat);
