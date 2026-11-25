@@ -7,7 +7,7 @@ import { Overlay, drawPulsarBlink, setFont, COLORS } from "./overlay.js";
 import { Trace } from "./trace.js";
 import { skyModel } from "./atmos.js";
 import { Models } from "./models.js";
-import { EYE_M, arrayAt, dishes, BUILDINGS } from "./layout.js";
+import { EYE_M, arrayAt, dishes, siteModels } from "./layout.js";
 
 const $ = (id) => document.getElementById(id);
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
@@ -355,7 +355,7 @@ function render() {
   gl.draw(glParams);
   if (models && onSite && st.layers.land) {
     models.draw({
-      cam, ob: frame.ob, dish: site.array, dishes: dishes(site.array, st.layers.chord), buildings: BUILDINGS, bore: frame.boreEnu,
+      cam, ob: frame.ob, dish: site.array, dishes: dishes(site.array, st.layers.chord), site: siteModels(st.layers.chord), full: st.layers.chord, bore: frame.boreEnu,
       light: { sun: frame.sun.enu, moon: frame.moon.enu, sunLin: frame.sky.sunLin.map((x) => x * frame.sunOverHills),
         ambLin: frame.sky.ambLin, moonLin: frame.moonLin, strength: frame.sky.strength,
         cloud: (P) => gl.cloudShade(P, frame.sun.enu, glParams.time, WIND) },
@@ -1076,6 +1076,7 @@ function credits() {
     "The drift trace's Sun is a quiet Sun of about 25 sfu at 400 MHz, rising as f^0.8, seen through the main lobe only. The active Sun is a few times brighter, and bursts far more.",
     "Cosmology: flat ΛCDM with H₀ = 67.66 km/s/Mpc and Ωm = 0.3111 (Planck 2018).",
     "Daylight and twilight: single scattering by air and aerosol, with ozone absorption, in a spherical atmosphere, plus an estimate of the higher orders; coefficients from E. Bruneton, A Qualitative and Quantitative Evaluation of 8 Clear Sky Models (2017). In the Landscape layer the hills are the real terrain (the skyline's SRTM data) with made-up detail and trees; the ground near you, the mist and the clouds are made up; the dishes follow photographs.",
+    "The site's buildings and its service road: outlines from OpenStreetMap (© OpenStreetMap contributors, ODbL, https://www.openstreetmap.org/copyright) and Microsoft's Global ML Building Footprints (ODbL); their heights are guesses. The arrays' layout and the containers: from the observatory's site plan.",
     "The beam is a model: a Gaussian main lobe for each dish, times the array factor of an ideal 8 × 8 grid. The real beam has sidelobes and errors not shown here.",
     `Catalogue built ${cat.generated}.`,
   ];

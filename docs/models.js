@@ -1,9 +1,11 @@
 // The things built on the site, drawn as triangle meshes in WebGL on their
-// own canvas between the sky and the overlay: the CHORD dishes and the
-// buildings (layout.js).
-// The shader is small, so it compiles at once anywhere (the sky's is the
-// slow one); the meshes are cheap to draw.  Nothing here is hidden by the
-// terrain (the site is level and kept clear of trees).
+// own canvas between the sky and the overlay: the CHORD dishes, the
+// buildings and containers, and the paving (layout.js).  The shader is
+// small, so it compiles at once anywhere (the sky's is the slow one); the
+// meshes are cheap to draw.  Nothing here is hidden by the terrain (the
+// site is level and kept clear of trees), so the paving lies on this
+// canvas over the ground, and each model's shadow is the model flattened
+// onto the ground along the Sun, drawn as a veil over what is below.
 //
 // The dishes follow photographs of the first ones: a deep white bowl (f/D
 // 0.21, so the feed sits inside it on three short legs), a white box at its
@@ -21,8 +23,9 @@ const LEG_ANGLES = [90, 210, 330];
 const FAR_M = 4000;                       // depth: distances up to this
 const STRIDE = 9;                         // floats per vertex: position, normal, material, (r / R, phi)
 
-// Materials: 0 the bowl (its inside and outside), 1 the white box, 2 steel,
-// 3 the rim, 4 concrete wall, 5 flat roof.
+// Materials: 0 the bowl (its inside and outside), 1 white paint (the
+// dish's box, containers), 2 steel, 3 the rim, 4 wall, 5 flat roof,
+// 6 asphalt.
 const VERT = `
 attribute vec3 aPos;      // m east, north, up of the dish's foot
 attribute vec3 aNorm;
@@ -32,11 +35,14 @@ uniform vec3 uAt;         // the foot, from the eye (m)
 uniform mat3 uCam;        // ENU -> camera (right, up, forward)
 uniform float uScale;     // CSS px per projection unit
 uniform vec2 uCentre, uPan, uSize;
+uniform vec3 uSun;
+uniform float uFlat;      // 1: flattened onto the ground along the Sun (a shadow)
 varying vec3 vPos, vNorm;
 varying float vMat;
 varying vec2 vLoc;
 void main() {
   vec3 p = aPos + uAt;
+  if (uFlat > 0.5) p -= uSun * (aPos.z - 0.03) / uSun.z;
   vPos = p; vNorm = aNorm; vMat = aMat; vLoc = aLoc;
   vec3 c = uCam * normalize(p);
   if (c.z < -0.5) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }   // behind the eye
@@ -49,6 +55,7 @@ const FRAG = `
 precision highp float;
 uniform vec3 uSun, uMoon, uSunLin, uAmbLin, uMoonLin;
 uniform float uStrength, uCloud;
+uniform float uShadowA;   // a shadow: how much it darkens what is below
 uniform vec3 uSl;         // the Sun in the bowl's frame (u, w, axis)
 varying vec3 vPos, vNorm;
 varying float vMat;
@@ -67,7 +74,9 @@ vec3 shade(vec3 alb, vec3 n, float sun, float gloss) {
     + uMoonLin * m * 0.6 + vec3(0.075, 0.07, 0.21) * night * (0.75 + 0.25 * n.z) + vec3(0.0015, 0.002, 0.0032);
   return curve(alb * lin + gloss * uSunLin * sun);
 }
+float grain(vec2 P, float k) { return fract(sin(dot(floor(P * k), vec2(12.9898, 78.233))) * 43758.5453); }
 void main() {
+  if (uShadowA > 0.0) { gl_FragColor = vec4(0.0, 0.0, 0.0, uShadowA); return; }
   vec3 view = normalize(-vPos), n = normalize(vNorm);
   int mat = int(vMat + 0.5);
   vec3 col;
@@ -88,8 +97,9 @@ void main() {
     }
   } else {
     if (dot(n, view) < 0.0) n = -n;
-    vec3 alb = mat == 1 ? vec3(0.8) : mat == 2 ? vec3(0.3) : mat == 3 ? vec3(0.9) : mat == 4 ? vec3(0.56, 0.53, 0.47)
-      : vec3(0.30, 0.29, 0.27) * (0.93 + 0.14 * fract(sin(dot(floor(vPos.xy * 8.0), vec2(12.9898, 78.233))) * 43758.5453));   // gravel
+    vec3 alb = mat == 1 ? vec3(0.8) : mat == 2 ? vec3(0.3) : mat == 3 ? vec3(0.9) : mat == 4 ? vec3(0.62, 0.58, 0.5)
+      : mat == 5 ? vec3(0.46, 0.45, 0.42) * (0.93 + 0.14 * grain(vPos.xy, 8.0))                     // gravel on the roof
+      : vec3(0.15, 0.15, 0.15) * (0.9 + 0.2 * grain(vPos.xy, 3.0));                               // asphalt
     col = shade(alb, n, uCloud, 0.0);
   }
   gl_FragColor = vec4(col, 1.0);
@@ -171,22 +181,53 @@ function dishMesh(a, u, w, D, nr, ns) {
   return new Float32Array(M.v);
 }
 
-/** A flat-roofed building, its foot's middle at the origin: half sizes
- *  east and north, and height (m).  A low parapet round the roof, and a
- *  plant box on it. */
-function buildingMesh(hx, hy, h) {
-  const M = new Mesh(), t = 0.15, p = 0.45;
-  M.box([0, 0, h / 2], [hx, 0, 0], [0, hy, 0], [0, 0, h / 2], 4);
-  M.quad([-hx, -hy, h + 0.01], [hx, -hy, h + 0.01], [hx, hy, h + 0.01], [-hx, hy, h + 0.01], 5);
-  for (const [o, x, y] of [[[0, hy - t, 0], [hx, 0, 0], [0, t, 0]], [[0, -hy + t, 0], [hx, 0, 0], [0, t, 0]],
-    [[hx - t, 0, 0], [t, 0, 0], [0, hy, 0]], [[-hx + t, 0, 0], [t, 0, 0], [0, hy, 0]]]) M.box([o[0], o[1], h + p / 2], x, y, [0, 0, p / 2], 4);
-  M.box([hx * 0.35, -hy * 0.4, h + 0.55], [1.1, 0, 0], [0, 0.8, 0], [0, 0, 0.55], 1);
+/** Triangles over a simple polygon (counter-clockwise): ear clipping. */
+function triangulate(P) {
+  const idx = P.map((_, i) => i), out = [];
+  const cr = (a, b, c) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+  for (let guard = 0; idx.length > 3 && guard < 1000; guard++) {
+    for (let k = 0; k < idx.length; k++) {
+      const a = P[idx[(k + idx.length - 1) % idx.length]], b = P[idx[k]], c = P[idx[(k + 1) % idx.length]];
+      if (cr(a, b, c) <= 0) continue;
+      if (idx.some((j) => { const q = P[j]; return q !== a && q !== b && q !== c && cr(a, b, q) > 0 && cr(b, c, q) > 0 && cr(c, a, q) > 0; })) continue;
+      out.push([a, b, c]);
+      idx.splice(k, 1);
+      break;
+    }
+  }
+  out.push(idx.map((j) => P[j]));
+  return out;
+}
+
+/** A building: its outline (m east and north of the eye, counter-
+ *  clockwise), walls to a flat roof at h, a low parapet round it. */
+function buildingMesh(pts, h) {
+  const M = new Mesh(), p = 0.45;
+  pts.forEach((a, i) => {
+    const b = pts[(i + 1) % pts.length];
+    M.quad([a[0], a[1], 0], [b[0], b[1], 0], [b[0], b[1], h + p], [a[0], a[1], h + p], 4);
+  });
+  for (const t of triangulate(pts)) M.tri(...t.map((q) => [q[0], q[1], h]), [0, 0, 1], 5);
+  return new Float32Array(M.v);
+}
+
+/** A shipping container, its foot's middle at the origin. */
+function containerMesh(hx, hy) {
+  const M = new Mesh();
+  M.box([0, 0, 1.3], [hx, 0, 0], [0, hy, 0], [0, 0, 1.3], 1);
+  return new Float32Array(M.v);
+}
+
+/** Paving: a polygon on the ground (m east and north of the eye). */
+function pavedMesh(pts) {
+  const M = new Mesh();
+  for (const t of triangulate(pts)) M.tri(...t.map((q) => [q[0], q[1], 0.04]), [0, 0, 1], 6);
   return new Float32Array(M.v);
 }
 
 export class Models {
   constructor(canvas) {
-    const gl = canvas.getContext("webgl", { antialias: true, premultipliedAlpha: true, alpha: true, depth: true });
+    const gl = canvas.getContext("webgl", { antialias: true, premultipliedAlpha: true, alpha: true, depth: true, stencil: true });
     if (!gl) throw new Error("WebGL is not available");
     this.gl = gl;
     this.canvas = canvas;
@@ -199,7 +240,7 @@ export class Models {
     const { gl } = this;
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.clearColor(0, 0, 0, 0);
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
   }
 
   /** The dish meshes for the beam's axis a: fine and coarse. */
@@ -215,17 +256,41 @@ export class Models {
     return this.meshes;
   }
 
+  /** The site's buildings, containers and paving (layout.js siteModels),
+   *  as meshes: once, and again when the full array's containers come or
+   *  go.  Each with where to take its cloud shade. */
+  siteMeshes(site, full) {
+    if (this.site?.full === full) return this.site;
+    const { gl } = this;
+    for (const it of [...(this.site?.solids || []), ...(this.site?.paved || [])]) gl.deleteBuffer(it.m.buf);
+    const mid = (pts) => [pts.reduce((s, q) => s + q[0], 0) / pts.length, pts.reduce((s, q) => s + q[1], 0) / pts.length];
+    const solids = [
+      ...site.buildings.map((b) => ({ m: this.upload(buildingMesh(b.pts, b.h)), at: [0, 0], c: mid(b.pts) })),
+      ...site.containers.map((c) => ({ m: this.upload(containerMesh(c.half[0], c.half[1])), at: c.at, c: c.at })),
+    ];
+    const paved = site.paved.map((pts) => ({ m: this.upload(pavedMesh(pts)), at: [0, 0], c: mid(pts) }));
+    for (const r of site.roads) {
+      // A strip per stretch, each a little longer than its stretch to close the bends.
+      for (let i = 0; i + 1 < r.pts.length; i++) {
+        const [a, b] = [r.pts[i], r.pts[i + 1]], L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        const d = [(b[0] - a[0]) / L, (b[1] - a[1]) / L], n = [-d[1] * r.width / 2, d[0] * r.width / 2], e = r.width / 2;
+        const A = [a[0] - d[0] * e, a[1] - d[1] * e], B = [b[0] + d[0] * e, b[1] + d[1] * e];
+        const pts = [[A[0] - n[0], A[1] - n[1]], [B[0] - n[0], B[1] - n[1]], [B[0] + n[0], B[1] + n[1]], [A[0] + n[0], A[1] + n[1]]];
+        paved.push({ m: this.upload(pavedMesh(pts)), at: [0, 0], c: mid([a, b]) });
+      }
+    }
+    return (this.site = { full, solids, paved });
+  }
+
   /**
-   * S: { cam, ob, dish: site.json array, dishes: [{ at }], buildings: [{ at,
-   * half, h }] (layout.js; taken once),
-   * bore: the beam (ENU), light: { sun, moon (ENU), sunLin, ambLin, moonLin,
-   * strength, cloud(P): the share of sunlight the clouds let through to P
-   * (m east, north of the eye) } }
+   * S: { cam, ob, dish: site.json array, dishes: [{ at }], site:
+   * layout.js siteModels(full), full, bore: the beam (ENU), light: { sun,
+   * moon (ENU), sunLin, ambLin, moonLin, strength, cloud(P): the share of
+   * sunlight the clouds let through to P (m east, north of the eye) } }
    */
   draw(S) {
     const { gl, p: { prog, u } } = this, { cam, light: L } = S;
     this.clear();
-    gl.enable(gl.DEPTH_TEST);
     gl.useProgram(prog);
     // ENU -> camera: (M^T fromEnu), column-major for uniformMatrix3fv.
     const C = [0, 1, 2].map((r) => [0, 1, 2].map((c) => [0, 1, 2].reduce((s, k) => s + cam.Mt[r * 3 + k] * S.ob.fromEnu[k * 3 + c], 0)));
@@ -242,9 +307,10 @@ export class Models {
     gl.uniform1f(u.uStrength, L.strength);
     const a = S.bore, meshes = this.dishMeshes(a, S.dish.dish_diameter_m), [uu, ww] = this.uw;
     gl.uniform3f(u.uSl, dot(L.sun, uu), dot(L.sun, ww), dot(L.sun, a));
+    const site = this.siteMeshes(S.site, S.full);
     const attrs = [["aPos", 3, 0], ["aNorm", 3, 3], ["aMat", 1, 6], ["aLoc", 2, 7]].map(([n, size, off]) => [gl.getAttribLocation(prog, n), size, off]);
     let bound = null;
-    const put = (m, at) => {
+    const put = (m, at, cloud) => {
       if (m !== bound) {
         gl.bindBuffer(gl.ARRAY_BUFFER, m.buf);
         for (const [loc, size, off] of attrs) {
@@ -254,12 +320,44 @@ export class Models {
         bound = m;
       }
       gl.uniform3f(u.uAt, at[0], at[1], -EYE_M);
-      gl.uniform1f(u.uCloud, L.cloud(at));
+      gl.uniform1f(u.uCloud, cloud);
       gl.drawArrays(gl.TRIANGLES, 0, m.n);
     };
-    for (const { at } of S.dishes) put(cam.s / Math.hypot(at[0], at[1], EYE_M) > 6 ? meshes[0] : meshes[1], at);   // by px per metre, about
-    this.buildings ??= S.buildings.map((b) => ({ at: b.at, m: this.upload(buildingMesh(b.half[0], b.half[1], b.h)) }));
-    for (const b of this.buildings) put(b.m, b.at);
+    const dishes = S.dishes.map(({ at }) => ({ at, c: at, cloud: L.cloud(at), m: cam.s / Math.hypot(at[0], at[1], EYE_M) > 6 ? meshes[0] : meshes[1] }));   // by px per metre, about
+    for (const it of [...site.solids, ...site.paved]) it.cloud = L.cloud(it.c);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+
+    // The paving, on the ground under all else.
+    gl.disable(gl.DEPTH_TEST);
+    gl.depthMask(false);
+    gl.uniform1f(u.uFlat, 0);
+    gl.uniform1f(u.uShadowA, 0);
+    for (const it of site.paved) put(it.m, it.at, it.cloud);
+
+    // The shadows: each pixel darkened once (the stencil), by what the
+    // direct sunlight adds to the skylight on the ground.
+    const fade = Math.min(1, Math.max(0, (L.sun[2] - 0.03) / 0.09));
+    if (fade > 0) {
+      const mean = (v) => (v[0] + v[1] + v[2]) / 3, look = (x) => Math.pow(1 - Math.exp(-0.35 * x), 1 / 2.2);
+      const amb = mean(L.ambLin), sun = mean(L.sunLin) * L.sun[2];
+      gl.enable(gl.STENCIL_TEST);
+      gl.stencilFunc(gl.EQUAL, 0, 0xff);
+      gl.stencilOp(gl.KEEP, gl.KEEP, gl.INCR);
+      gl.uniform1f(u.uFlat, 1);
+      for (const it of [...site.solids, ...dishes]) {
+        gl.uniform1f(u.uShadowA, Math.min(0.8, fade * (1 - look(amb) / look(amb + sun * it.cloud))) + 1e-4);
+        put(it.m === meshes[0] ? meshes[1] : it.m, it.at, it.cloud);
+      }
+      gl.disable(gl.STENCIL_TEST);
+      gl.uniform1f(u.uFlat, 0);
+      gl.uniform1f(u.uShadowA, 0);
+    }
+
+    // The buildings, containers and dishes.
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthMask(true);
+    for (const it of [...site.solids, ...dishes]) put(it.m, it.at, it.cloud);
   }
 
   upload(data) {

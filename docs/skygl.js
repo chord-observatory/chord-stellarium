@@ -222,7 +222,7 @@ vec3 terrainAt(vec2 P) {
   h += (fbm(P * 0.21 + 14.0, px * 0.21) - 0.5) * 0.5;       // hummocks
   h = mix(h, 0.0, under(0.0, 8.0, pad));                    // the pad is level with the dishes' feet
 
-  h = mix(h, 0.0, under(0.0, 10.0, site) * 0.8);            // the site itself, all but level
+  h = mix(h, 0.0, under(0.0, 10.0, site));                  // the site itself level: the paving and the models' shadows lie on it
 
   float dry = smoothstep(0.0, 4.0, pad) * smoothstep(-20.0, 0.0, site);   // no boulders or brush on the site
   float stone = clamp(outcrop * 2.5, 0.0, 1.0) * (1.0 - level);
@@ -632,13 +632,6 @@ float cloudShade(vec2 P) {
   return 1.0 - 0.8 * cumulus(P / 1000.0 + uSun.xy / max(uSun.z, 0.08) * 2.0, 0.1);
 }
 
-// Sunlight past the dishes at P on the ground (m): each dish shades a disc.
-float dishShade(vec2 P) {
-  if (uSun.z < 0.03) return 1.0;
-  vec2 g = (P + uSun.xy / uSun.z * 2.4 - uArrayBox.xy) / uSpacing + 0.5 * (uCount - 1.0);
-  vec2 i = clamp(floor(g + 0.5), vec2(0.0), uCount - 1.0);
-  return 0.12 + 0.88 * smoothstep(2.6, 3.3, length((g - i) * uSpacing));
-}
 
 // The bunchgrass standing at Q (m): its height, 0..1 of GRASS.
 float grassH(vec2 Q) {
@@ -1247,7 +1240,6 @@ vec3 groundAt(vec3 e, float t, float pix) {
     }
     ao *= mix(1.0, min(cavity, 1.0), (1.0 - cov.z) * max(step(0.5, max(woody, rock)), 1.0 - near));   // hollows in brush and rock
     float sun = sunPast(p + n * (0.3 + 0.004 * t) + vec3(0.0, 0.0, GRASS * k * f)) * shade * lit;
-    if (onPad > 0.0 || length(P - uArrayBox.xy) < 90.0) sun *= dishShade(P);
     c = litS(alb, n, sun, ao * (0.75 + 0.25 * n.z));
     float back = pow(max(dot(hd, normalize(uSun.xy + 1e-6)), 0.0), 3.0) * max(uSun.z + 0.05, 0.0);   // light through the blades
     c += curve(uSunLin * vec3(0.30, 0.25, 0.08) * back * (0.3 + sheen) * sun * grassy * smoothstep(0.2, 0.8, f)) * 0.5;
