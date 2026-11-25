@@ -138,6 +138,7 @@ export class Overlay {
     if (L.planets) this.planets();
     if (L.sunmoon) this.sunMoon();
     if (L.beam || L.strip) this.beamOutline();
+    if (L.chime) this.chimeBeam();
     if (S.selected) this.selection(S.selected);
     if (L.labels) this.labels.draw(ctx);
     return { hits: this.hits, pulsars: this.blink, zoom };
@@ -473,6 +474,25 @@ export class Overlay {
       c.beginPath(); c.moveTo(x - 4, y); c.lineTo(x + 4, y); c.moveTo(x, y - 4); c.lineTo(x, y + 4); c.stroke();
       if (S.layers.labels) this.labels.add("beam now", x, y, { prio: 98, color: "rgba(255,255,255,0.9)", font: "600 11px var(--font)", gap: 8 });
     });
+  }
+
+  // CHIME's primary beam: its half-power edges east and west of the
+  // meridian, 1.2 lambda / 20 m across (2.6 deg at 400 MHz, 1.3 deg at 800,
+  // as CHIME's papers give it), from 60 deg south of the zenith to 60 deg
+  // north (its N-S reach, about 120 deg); at the band's ends, kept to
+  // CHIME's 400-800 MHz.
+  chimeBeam() {
+    const S = this.S, F = S.ob.fromEnu, [lo, hi] = S.band.map((f) => Math.min(800, Math.max(400, f)));
+    const edge = (f, color) => {
+      const phi = (1.2 * (299.792458 / f) / 20) / 2, c = Math.cos(phi), s = Math.sin(phi);
+      const side = (sg) => range(-60, 60, 1).map((t) => apply(F, [sg * s, c * Math.sin(t * DEG), c * Math.cos(t * DEG)]));
+      const west = side(-1).reverse();
+      this.line([...side(1), ...west, west[west.length - 1] && side(1)[0]], color, 1.2, [6, 3]);
+    };
+    edge(lo, "rgba(140,230,255,0.85)");
+    if (hi - lo >= 1) edge(hi, "rgba(140,230,255,0.5)");
+    if (S.layers.labels) this.at(apply(F, [0, Math.sin(-50 * DEG), Math.cos(-50 * DEG)]), (x, y) =>
+      this.labels.add("CHIME beam", x, y, { prio: 90, color: "rgba(140,230,255,0.9)", font: "600 11px var(--font)", gap: 10 }));
   }
 
   selection(obj) {

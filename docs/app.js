@@ -30,6 +30,7 @@ const LAYERS = [
   ["horizon", "Horizon", true, "rgb(150,220,175)"],
   ["land", "Landscape", true, "#c8b27a"],
   ["chord", "Full CHORD (planned)", false, "#6f9be0"],
+  ["chime", "CHIME beam", false, "rgb(140,230,255)"],
   ["ecliptic", "Ecliptic", true, "rgb(240,205,110)"],
   ["grid_eq", "RA / Dec grid", false, "rgb(150,175,225)"],
   ["grid_gal", "Galactic grid", false, "rgb(225,165,125)"],
