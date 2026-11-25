@@ -56,11 +56,12 @@ void main() {
 const FRAG = `
 precision highp float;
 uniform vec3 uSun, uMoon, uSunLin, uAmbLin, uMoonLin;
-uniform float uStrength, uCloud;
+uniform float uStrength, uCloud, uScale;
 uniform float uShadowA;   // a shadow: how much it darkens what is below
 uniform float uPass;      // 0: all but the wire mesh; 1: the wire mesh only
 uniform vec3 uWall;       // a building's wall colour
-uniform float uWindows;   // 1: rows of windows in its walls
+uniform float uStyle;     // a building's walls: 0 plain, 1 ribbed panels (the laboratory), 2 stucco with punched windows, 3 concrete block
+uniform float uTop;       // its roof's height (m)
 const float MESH_A = 0.55; // how much of the light a wire-mesh reflector stops
 uniform vec3 uSl;         // the Sun in the bowl's frame (u, w, axis)
 varying vec3 vPos, vNorm;
@@ -81,6 +82,37 @@ vec3 shade(vec3 alb, vec3 n, float sun, float gloss) {
   return curve(alb * lin + gloss * uSunLin * sun);
 }
 float grain(vec2 P, float k) { return fract(sin(dot(floor(P * k), vec2(12.9898, 78.233))) * 43758.5453); }
+float band(float x, float a, float b) { return step(a, x) * step(x, b); }
+// A building's wall at (along, z) m: its colour, and gloss (glass).  The
+// fine detail fades out where it would be under a few pixels (px: pixels
+// per metre).  After the user's photograph: the laboratory in tan ribbed
+// panels, a dark brown fascia, a band of windows with white mullions below
+// and tall windows above; the block beside it in orange stucco with
+// punched windows in white frames.
+vec3 wall(float along, float z, float px, out float gloss) {
+  vec3 c = uWall, glass = vec3(0.05, 0.07, 0.1);
+  float fine = smoothstep(4.0, 16.0, px);
+  gloss = 0.0;
+  if (uStyle > 0.5 && uStyle < 1.5) {
+    c *= 1.0 - 0.09 * fine * (0.5 + 0.5 * cos(6.2832 * along / 0.4));       // the panels' ribs
+    if (z > uTop - 0.9) c = vec3(0.36, 0.27, 0.2);                          // fascia
+    float m = fract(along / 1.6);
+    if (z > 1.0 && z < 2.6) { if (m < 0.06 * fine + 0.01 || z < 1.08) c = vec3(0.82); else { c = glass; gloss = 0.3; } }
+    float t = fract(along / 6.0);
+    if (z > 4.4 && z < 7.0 && t > 0.15 && t < 0.5) { c = t < 0.17 || t > 0.48 ? vec3(0.82) : glass; gloss = c == glass ? 0.3 : 0.0; }
+  } else if (uStyle > 1.5 && uStyle < 2.5) {
+    c *= 0.95 + 0.1 * fine * grain(vec2(along, z), 6.0);                     // stucco
+    float s = fract(z / 3.5), t = fract(along / 3.6);
+    if (s > 0.3 && s < 0.72 && t > 0.3 && t < 0.66) c = vec3(0.85);           // frame
+    if (s > 0.33 && s < 0.69 && t > 0.33 && t < 0.63) { c = glass; gloss = 0.3; }
+    if (z > uTop - 0.5) c = vec3(0.8, 0.76, 0.68);                          // coping
+  } else if (uStyle > 2.5) {
+    float row = floor(z / 0.2), j = fract(z / 0.2), k = fract(along / 0.4 + 0.5 * mod(row, 2.0));
+    c *= 1.0 - 0.12 * fine * max(step(j, 0.07), step(k, 0.035));             // the blocks' joints
+  }
+  if (z < 0.4) c = vec3(0.45, 0.44, 0.42);                                   // the plinth
+  return c;
+}
 void main() {
   if (uShadowA > 0.0) { gl_FragColor = vec4(0.0, 0.0, 0.0, uShadowA); return; }
   vec3 view = normalize(-vPos), n = normalize(vNorm);
@@ -104,15 +136,15 @@ void main() {
     }
   } else {
     if (dot(n, view) < 0.0) n = -n;
-    // Windows: a dark pane in each 3.6 m storey and 4.5 m bay, along the wall.
-    float along = abs(n.x) > abs(n.y) ? vPos.y : vPos.x, z = vPos.z + ${EYE_M.toFixed(1)};
-    bool pane = uWindows > 0.5 && fract(z / 3.6) > 0.3 && fract(z / 3.6) < 0.72 && fract(along / 4.5) < 0.45 && z > 0.6;
-    vec3 alb = mat == 1 ? vec3(0.8) : mat == 2 ? vec3(0.3) : mat == 3 ? vec3(0.9) : mat == 4 ? (pane ? vec3(0.06, 0.07, 0.08) : uWall)
+    float gloss = 0.0;
+    vec3 wc = mat == 4 ? wall(abs(n.x) > abs(n.y) ? vPos.y : vPos.x, vPos.z + ${EYE_M.toFixed(1)}, uScale / length(vPos), gloss) : vec3(0.0);
+    vec3 alb = mat == 1 ? vec3(0.8) : mat == 2 ? vec3(0.3) : mat == 3 ? vec3(0.9) : mat == 4 ? wc
       : mat == 9 ? vec3(0.13, 0.25, 0.08) * (0.85 + 0.3 * grain(vPos.xy, 2.0))
       : mat == 5 ? vec3(0.46, 0.45, 0.42) * (0.93 + 0.14 * grain(vPos.xy, 8.0))                     // gravel on the roof
       : mat == 6 ? vec3(0.15, 0.15, 0.15) * (0.9 + 0.2 * grain(vPos.xy, 3.0))                     // asphalt
       : mat == 7 ? vec3(0.42, 0.43, 0.45) : vec3(0.86);
-    col = shade(alb, n, uCloud, 0.0);
+    col = shade(alb, n, uCloud, gloss * pow(max(dot(reflect(-view, n), uSun), 0.0), 12.0));
+    if (gloss > 0.0) col += curve(uAmbLin * 0.25 * (1.0 - max(dot(view, n), 0.0))) * 0.6;   // the sky in the glass
     if (mat == 7) { gl_FragColor = vec4(col * MESH_A, MESH_A); return; }
   }
   gl_FragColor = vec4(col, 1.0);
@@ -358,7 +390,7 @@ export class Models {
     for (const m of new Set([...(this.site?.solids || []), ...(this.site?.paved || [])].map((it) => it.m))) gl.deleteBuffer(m.buf);
     const mid = (pts) => [pts.reduce((s, q) => s + q[0], 0) / pts.length, pts.reduce((s, q) => s + q[1], 0) / pts.length];
     const solids = [
-      ...site.buildings.map((b) => ({ m: this.upload(buildingMesh(b.pts, b.h)), at: [0, 0], c: mid(b.pts), wall: b.wall, windows: b.windows })),
+      ...site.buildings.map((b) => ({ m: this.upload(buildingMesh(b.pts, b.h)), at: [0, 0], c: mid(b.pts), wall: b.wall, style: b.style, h: b.h })),
       ...site.containers.map((c) => ({ m: this.upload(containerMesh(c.half[0], c.half[1])), at: c.at, c: c.at })),
     ];
     const ch = site.chime, chime = this.upload(chimeMesh(ch.half[0], ch.half[1], ch.f));
@@ -409,7 +441,8 @@ export class Models {
     let bound = null;
     const put = (m, at, cloud, it = {}) => {
       gl.uniform3fv(u.uWall, it.wall || [0.62, 0.58, 0.5]);
-      gl.uniform1f(u.uWindows, it.windows ? 1 : 0);
+      gl.uniform1f(u.uStyle, { lab: 1, stucco: 2, block: 3 }[it.style] ?? 0);
+      gl.uniform1f(u.uTop, it.h ?? 0);
       if (m !== bound) {
         gl.bindBuffer(gl.ARRAY_BUFFER, m.buf);
         for (const [loc, size, off] of attrs) {

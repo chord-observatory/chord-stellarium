@@ -23,20 +23,20 @@ export const EYE_AT = [-87.9, 152.5];
 export const toEye = ([e, n]) => [e - EYE_AT[0], n - EYE_AT[1]];
 
 /** The buildings on the site: outlines (site frame, counter-clockwise),
- *  flat roofs at h (m); wall: their colour (else pale concrete); windows:
- *  rows of them.  Outlines from OpenStreetMap and Microsoft's building
+ *  flat roofs at h (m); wall: their colour (else pale concrete); style:
+ *  their walls' detail (models.js wall: "lab", "stucco", "block").  Outlines from OpenStreetMap and Microsoft's building
  *  footprints (both ODbL).  The main laboratory (OSM 133442186: two tall
  *  storeys, tan panels) and the orange two-storey block beside it (taken
  *  to be OSM 1188868679) follow the user's photograph; the other heights
  *  are guesses (one storey, 3 to 4 m), save the block house's (user). */
 export const BUILDINGS = [
   { src: "OSM way 133442183", h: 3.0, pts: [[16.4,-26.9],[25.2,-26.9],[25.2,-17.3],[16.4,-17.3]] },
-  { src: "OSM way 133442186", h: 8.5, wall: [0.66, 0.56, 0.42], windows: true, pts: [[44.3,92.8],[44.3,70.9],[45.4,70.9],[45.4,69.1],[39.5,69.1],[39.5,56.2],[37.8,56.2],[37.8,53.1],[39.6,53.1],[39.6,52.9],[40.4,52.9],[40.4,46.8],[52.0,46.8],[52.0,56.0],[55.9,56.0],[55.9,59.4],[52.0,59.4],[52.0,69.1],[49.7,69.1],[49.7,70.9],[53.2,70.9],[53.2,68.4],[59.3,68.4],[59.3,69.8],[96.2,69.8],[96.2,71.1],[101.4,71.1],[101.4,92.8]] },
+  { src: "OSM way 133442186", h: 8.5, wall: [0.66, 0.56, 0.42], style: "lab", pts: [[44.3,92.8],[44.3,70.9],[45.4,70.9],[45.4,69.1],[39.5,69.1],[39.5,56.2],[37.8,56.2],[37.8,53.1],[39.6,53.1],[39.6,52.9],[40.4,52.9],[40.4,46.8],[52.0,46.8],[52.0,56.0],[55.9,56.0],[55.9,59.4],[52.0,59.4],[52.0,69.1],[49.7,69.1],[49.7,70.9],[53.2,70.9],[53.2,68.4],[59.3,68.4],[59.3,69.8],[96.2,69.8],[96.2,71.1],[101.4,71.1],[101.4,92.8]] },
   { src: "OSM way 1188868674", h: 3.0, pts: [[-89.8,168.8],[-82.7,168.8],[-82.7,174.6],[-89.8,174.6]] },
-  { src: "OSM way 1188868675", h: 3.6, pts: [[-94.1,154.5],[-81.7,154.5],[-81.7,167.0],[-94.1,167.0]] },
+  { src: "OSM way 1188868675", h: 3.6, style: "block", pts: [[-94.1,154.5],[-81.7,154.5],[-81.7,167.0],[-94.1,167.0]] },
   { src: "OSM way 1188868677", h: 2.6, pts: [[20.3,-42.9],[24.4,-42.9],[24.4,-38.0],[20.3,-38.0]] },
   { src: "OSM way 1188868678", h: 4.0, pts: [[63.2,12.0],[72.4,12.0],[72.4,28.9],[66.1,28.9],[66.1,31.6],[81.2,31.6],[81.2,39.1],[63.2,39.1]] },
-  { src: "OSM way 1188868679", h: 7, wall: [0.72, 0.5, 0.33], windows: true, pts: [[62.6,52.4],[62.6,48.3],[63.7,48.3],[63.7,45.9],[81.7,45.9],[81.7,54.0],[63.7,54.0],[63.7,52.4]] },
+  { src: "OSM way 1188868679", h: 7, wall: [0.74, 0.5, 0.32], style: "stucco", pts: [[62.6,52.4],[62.6,48.3],[63.7,48.3],[63.7,45.9],[81.7,45.9],[81.7,54.0],[63.7,54.0],[63.7,52.4]] },
   { src: "OSM way 1188868680", h: 2.6, pts: [[70.5,129.5],[75.2,129.5],[75.2,134.2],[70.5,134.2]] },
   { src: "OSM way 1188868681", h: 3.0, pts: [[77.1,148.8],[84.5,148.8],[84.5,156.9],[77.1,156.9]] },
   { src: "OSM way 1188868682", h: 3.5, pts: [[60.2,158.5],[75.2,158.5],[75.2,170.1],[60.2,170.1]] },
@@ -93,7 +93,7 @@ export const ROADS = [
 export function siteModels(full) {
   const pts = (p) => p.map(toEye);
   return {
-    buildings: BUILDINGS.map((b) => ({ h: b.h, pts: pts(b.pts), wall: b.wall, windows: b.windows })),
+    buildings: BUILDINGS.map((b) => ({ h: b.h, pts: pts(b.pts), wall: b.wall, style: b.style })),
     containers: CONTAINERS.filter((c) => full || !c.full).map((c) => ({ at: toEye(c.at), half: c.half })),
     paved: PAVED.map(pts),
     lawn: LAWN.map(pts),
