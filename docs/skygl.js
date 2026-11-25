@@ -1423,9 +1423,12 @@ export class SkyGL {
   /** horizon: { alt: skyline altitude (deg) per azimuth step, from north
    *  through east; dist: distance (km) to the terrain that sets it, or
    *  null: all beyond the maps };  cut: parts of the Landscape left out
-   *  of its shader (CUTS) */
-  constructor(canvas, image, horizon, cut = []) {
-    this.cut = cut;
+   *  of its shader (CUTS), or null: the near trees, where their compile
+   *  would hold the page.  That is Windows (Direct3D's compiler: 13 s
+   *  with them and 4 s without, on the user's laptop) in a browser that
+   *  cannot compile in the background, or in Firefox (its page froze
+   *  for the compile, whether or not it has the extension). */
+  constructor(canvas, image, horizon, cut = null) {
     const gl = canvas.getContext("webgl", { antialias: false, premultipliedAlpha: false, preserveDrawingBuffer: true, powerPreference: "high-performance" });
     if (!gl) throw new Error("WebGL is not available");
     this.gl = gl;
@@ -1434,8 +1437,9 @@ export class SkyGL {
     // browsers take all compiles in turn, so theirs start only when the
     // Landscape is wanted and a first frame is out (landProgram).
     // onReady: called once the Landscape can be drawn.
-    this.sky = link(gl, fragment(0, this.cut));
     this.parallel = gl.getExtension("KHR_parallel_shader_compile");
+    this.cut = cut ?? (/Windows/.test(navigator.userAgent) && (!this.parallel || /Firefox/.test(navigator.userAgent)) ? ["trees"] : []);
+    this.sky = link(gl, fragment(0, this.cut));
     this.onReady = null;
     const buf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, buf);

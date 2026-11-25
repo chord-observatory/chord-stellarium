@@ -10,7 +10,7 @@ import { CUTS, fragment, compileMs } from "./skygl.js";
 const out = document.getElementById("out"), say = (s) => { out.textContent += s; };
 const gl = document.getElementById("c").getContext("webgl", { powerPreference: "high-performance" });
 const x = gl.getExtension("WEBGL_debug_renderer_info");
-say(`${navigator.userAgent}\n${gl.getParameter(x ? x.UNMASKED_RENDERER_WEBGL : gl.RENDERER)}\n\n`);
+say(`${navigator.userAgent}\n${gl.getParameter(x ? x.UNMASKED_RENDERER_WEBGL : gl.RENDERER)}\nbackground compile: ${gl.getExtension("KHR_parallel_shader_compile") ? "yes" : "no"}\n\n`);
 const all = Object.keys(CUTS), trees = ["limbs", "foot", "under", "shade", "bulk"];
 const jobs = [
   ["sky alone", 0, []],
