@@ -26,7 +26,7 @@ const STRIDE = 9;                         // floats per vertex: position, normal
 
 // Materials: 0 the bowl (its inside and outside), 1 white paint (the
 // dish's box, containers), 2 steel, 3 the rim, 4 wall, 5 flat roof,
-// 6 asphalt, 7 wire-mesh reflector (seen through: drawn last, part
+// 6 asphalt (9 lawn), 7 wire-mesh reflector (seen through: drawn last, part
 // transparent), 8 white steel.
 const VERT = `
 attribute vec3 aPos;      // m east, north, up of the dish's foot
@@ -59,6 +59,8 @@ uniform vec3 uSun, uMoon, uSunLin, uAmbLin, uMoonLin;
 uniform float uStrength, uCloud;
 uniform float uShadowA;   // a shadow: how much it darkens what is below
 uniform float uPass;      // 0: all but the wire mesh; 1: the wire mesh only
+uniform vec3 uWall;       // a building's wall colour
+uniform float uWindows;   // 1: rows of windows in its walls
 const float MESH_A = 0.55; // how much of the light a wire-mesh reflector stops
 uniform vec3 uSl;         // the Sun in the bowl's frame (u, w, axis)
 varying vec3 vPos, vNorm;
@@ -102,7 +104,11 @@ void main() {
     }
   } else {
     if (dot(n, view) < 0.0) n = -n;
-    vec3 alb = mat == 1 ? vec3(0.8) : mat == 2 ? vec3(0.3) : mat == 3 ? vec3(0.9) : mat == 4 ? vec3(0.62, 0.58, 0.5)
+    // Windows: a dark pane in each 3.6 m storey and 4.5 m bay, along the wall.
+    float along = abs(n.x) > abs(n.y) ? vPos.y : vPos.x, z = vPos.z + ${EYE_M.toFixed(1)};
+    bool pane = uWindows > 0.5 && fract(z / 3.6) > 0.3 && fract(z / 3.6) < 0.72 && fract(along / 4.5) < 0.45 && z > 0.6;
+    vec3 alb = mat == 1 ? vec3(0.8) : mat == 2 ? vec3(0.3) : mat == 3 ? vec3(0.9) : mat == 4 ? (pane ? vec3(0.06, 0.07, 0.08) : uWall)
+      : mat == 9 ? vec3(0.13, 0.25, 0.08) * (0.85 + 0.3 * grain(vPos.xy, 2.0))
       : mat == 5 ? vec3(0.46, 0.45, 0.42) * (0.93 + 0.14 * grain(vPos.xy, 8.0))                     // gravel on the roof
       : mat == 6 ? vec3(0.15, 0.15, 0.15) * (0.9 + 0.2 * grain(vPos.xy, 3.0))                     // asphalt
       : mat == 7 ? vec3(0.42, 0.43, 0.45) : vec3(0.86);
@@ -265,7 +271,7 @@ function chimeMesh(hw, hl, f) {
  *  legs; a small hut at the foot (as the user's photograph). */
 function galtMesh(D) {
   const M = new Mesh(), R = D / 2, f = 0.3 * D, zv = 17, NR = 8, NS = 48;
-  frustum(M, 0, 0, 0, 12, 3.6, 1.9, 1);
+  frustum(M, 0, 0, 0, 12, 4.4, 2.1, 1);
   M.box([0, 0, 14], [2.6, 0, 0], [0, 1.6, 0], [0, 0, 2], 1);
   const surf = (r, phi) => [r * Math.cos(phi), r * Math.sin(phi), zv + (r * r) / (4 * f)];
   const nUp = (r, phi) => norm([(-r / (2 * f)) * Math.cos(phi), (-r / (2 * f)) * Math.sin(phi), 1]);
@@ -296,10 +302,10 @@ function containerMesh(hx, hy) {
   return new Float32Array(M.v);
 }
 
-/** Paving: a polygon on the ground (m east and north of the eye). */
-function pavedMesh(pts) {
+/** Paving (or lawn: mat 9): a polygon on the ground (m east and north of the eye). */
+function pavedMesh(pts, mat = 6) {
   const M = new Mesh();
-  for (const t of triangulate(pts)) M.tri(...t.map((q) => [q[0], q[1], 0.04]), [0, 0, 1], 6);
+  for (const t of triangulate(pts)) M.tri(...t.map((q) => [q[0], q[1], 0.04]), [0, 0, 1], mat);
   return new Float32Array(M.v);
 }
 
@@ -343,13 +349,14 @@ export class Models {
     for (const m of new Set([...(this.site?.solids || []), ...(this.site?.paved || [])].map((it) => it.m))) gl.deleteBuffer(m.buf);
     const mid = (pts) => [pts.reduce((s, q) => s + q[0], 0) / pts.length, pts.reduce((s, q) => s + q[1], 0) / pts.length];
     const solids = [
-      ...site.buildings.map((b) => ({ m: this.upload(buildingMesh(b.pts, b.h)), at: [0, 0], c: mid(b.pts) })),
+      ...site.buildings.map((b) => ({ m: this.upload(buildingMesh(b.pts, b.h)), at: [0, 0], c: mid(b.pts), wall: b.wall, windows: b.windows })),
       ...site.containers.map((c) => ({ m: this.upload(containerMesh(c.half[0], c.half[1])), at: c.at, c: c.at })),
     ];
     const ch = site.chime, chime = this.upload(chimeMesh(ch.half[0], ch.half[1], ch.f));
     solids.push(...ch.at.map((at) => ({ m: chime, at, c: at, veil: 0.6 })));
     solids.push({ m: this.upload(galtMesh(site.galt.D)), at: site.galt.at, c: site.galt.at, veil: 0.6 });
-    const paved = site.paved.map((pts) => ({ m: this.upload(pavedMesh(pts)), at: [0, 0], c: mid(pts) }));
+    const paved = [...site.lawn.map((pts) => ({ m: this.upload(pavedMesh(pts, 9)), at: [0, 0], c: mid(pts) })),
+      ...site.paved.map((pts) => ({ m: this.upload(pavedMesh(pts)), at: [0, 0], c: mid(pts) }))];
     for (const r of site.roads) {
       // A strip per stretch, each a little longer than its stretch to close the bends.
       for (let i = 0; i + 1 < r.pts.length; i++) {
@@ -391,7 +398,9 @@ export class Models {
     const site = this.siteMeshes(S.site, S.full);
     const attrs = [["aPos", 3, 0], ["aNorm", 3, 3], ["aMat", 1, 6], ["aLoc", 2, 7]].map(([n, size, off]) => [gl.getAttribLocation(prog, n), size, off]);
     let bound = null;
-    const put = (m, at, cloud) => {
+    const put = (m, at, cloud, it = {}) => {
+      gl.uniform3fv(u.uWall, it.wall || [0.62, 0.58, 0.5]);
+      gl.uniform1f(u.uWindows, it.windows ? 1 : 0);
       if (m !== bound) {
         gl.bindBuffer(gl.ARRAY_BUFFER, m.buf);
         for (const [loc, size, off] of attrs) {
@@ -441,7 +450,7 @@ export class Models {
     gl.enable(gl.DEPTH_TEST);
     gl.depthMask(true);
     gl.uniform1f(u.uPass, 0);
-    for (const it of [...site.solids, ...dishes]) put(it.m, it.at, it.cloud);
+    for (const it of [...site.solids, ...dishes]) put(it.m, it.at, it.cloud, it);
     gl.depthMask(false);
     gl.uniform1f(u.uPass, 1);
     for (const it of site.solids) if (it.veil) put(it.m, it.at, it.cloud);
