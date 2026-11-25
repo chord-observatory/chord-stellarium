@@ -264,8 +264,9 @@ vec3 terrainAt(vec2 P) {
         float d = length(P - S), x = d / rad;
         // A pine traced inside it (within 240 m) has a flat-topped outline,
         // room for its crown; beyond, the outline is all there is: a dome.
+        // Where no trees are traced (TREES 0), a dome everywhere.
         float c = T.z < 0.5 ? ht * max(1.0 - x, 0.0)
-                : ht * (length(S) < 240.0 ? pow(max(1.0 - x * x * x * x, 0.0), 0.25) : pow(max(1.0 - x * x, 0.0), 0.35));
+                : ht * (TREES > 0 && length(S) < 240.0 ? pow(max(1.0 - x * x * x * x, 0.0), 0.25) : pow(max(1.0 - x * x, 0.0), 0.35));
         if (px > 0.5) c = ht * pow(max(1.0 - x, 0.0), 0.75) * (0.7 + 0.6 * noise(P * 0.45 + S * 0.37));   // far off, a ragged spire
         crown = max(crown, c);
         edge = min(edge, d - rad);
@@ -709,7 +710,11 @@ vec3 aired(vec3 c, vec3 p, float t, vec2 hd) {
 // The height of a traced tree's outline in the maps (terrainAt's) x of its
 // radii from the trunk.  T: treeOf.
 float outlineOf(float x, vec3 T) {
+#if TREES
   return T.x * (T.z < 0.5 ? max(1.0 - x, 0.0) : pow(max(1.0 - x * x * x * x, 0.0), 0.25));
+#else
+  return T.x * (T.z < 0.5 ? max(1.0 - x, 0.0) : pow(max(1.0 - x * x, 0.0), 0.35));
+#endif
 }
 // The ground at P, by the tree at S (T: treeOf; T.x = 0 for none) whose
 // outline the map adds to it there.  Where the outline drops steeply to the
@@ -1386,6 +1391,9 @@ export const CUTS = { trees: "TREES", limbs: "LIMBS", foot: "FOOT", under: "UNDE
 export const fragment = (land, cut = []) =>
   `#define LAND ${land}\n${Object.entries(CUTS).map(([k, m]) => `#define ${m} ${cut.includes(k) ? 0 : 1}\n`).join("")}${FRAG}`;
 
+/** The maps' fragment shader, for a sky shader with that cut. */
+const mapFragment = (cut) => `#define TREES ${cut.includes("trees") ? 0 : 1}\n${MAP_FRAG}`;
+
 /** Milliseconds to compile and link a fragment shader (blocking). */
 export function compileMs(gl, frag) {
   const t0 = performance.now(), { prog } = linked(gl, start(gl, frag));
@@ -1423,11 +1431,8 @@ export class SkyGL {
   /** horizon: { alt: skyline altitude (deg) per azimuth step, from north
    *  through east; dist: distance (km) to the terrain that sets it, or
    *  null: all beyond the maps };  cut: parts of the Landscape left out
-   *  of its shader (CUTS), or null: the near trees, where their compile
-   *  would hold the page.  That is Windows (Direct3D's compiler: 13 s
-   *  with them and 4 s without, on the user's laptop) in a browser that
-   *  cannot compile in the background, or in Firefox (its page froze
-   *  for the compile, whether or not it has the extension). */
+   *  of its shader (CUTS), or null: the near trees, unless this machine
+   *  can take their compile (landProgram) */
   constructor(canvas, image, horizon, cut = null) {
     const gl = canvas.getContext("webgl", { antialias: false, premultipliedAlpha: false, preserveDrawingBuffer: true, powerPreference: "high-performance" });
     if (!gl) throw new Error("WebGL is not available");
@@ -1438,8 +1443,8 @@ export class SkyGL {
     // Landscape is wanted and a first frame is out (landProgram).
     // onReady: called once the Landscape can be drawn.
     this.parallel = gl.getExtension("KHR_parallel_shader_compile");
-    this.cut = cut ?? (/Windows/.test(navigator.userAgent) && (!this.parallel || /Firefox/.test(navigator.userAgent)) ? ["trees"] : []);
-    this.sky = link(gl, fragment(0, this.cut));
+    this.cut = cut;
+    this.sky = link(gl, fragment(0, cut ?? []));
     this.onReady = null;
     const buf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, buf);
@@ -1490,10 +1495,11 @@ export class SkyGL {
 
   /** Bake the terrain into its height maps (MAPS), a strip at a time:
    *  each next() draws one strip and leaves the state as draw expects
-   *  it, so frames can be drawn in between.  t: { arrayBox, eyeH,
-   *  terrain: the image terrain.png }. */
-  *bake(t) {
-    const { gl } = this, { prog, u } = linked(gl, this.mapJob), fb = gl.createFramebuffer();
+   *  it, so frames can be drawn in between, with the maps there were;
+   *  the last puts the new maps in their place.  job: the maps' program
+   *  (start); t: { arrayBox, eyeH, terrain: the image terrain.png }. */
+  *bake(job, t) {
+    const { gl } = this, { prog, u } = linked(gl, job), fb = gl.createFramebuffer(), maps = [];
     const set = (tex) => {
       gl.bindTexture(gl.TEXTURE_2D, tex);
       for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR],
@@ -1510,10 +1516,10 @@ export class SkyGL {
     gl.uniform1f(u.uEyeH, t.eyeH);
     for (let i = 0; i < MAPS.length; i++) {
       const half = MAPS[i], n = MAP_NS[i], tex = gl.createTexture();
-      gl.activeTexture(gl.TEXTURE4 + i);
+      maps.push(tex);
       set(tex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, n, n, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.skyTex);
       for (let y = 0; y < n; y += BAKE_ROWS) {
         gl.useProgram(prog);
         gl.bindTexture(gl.TEXTURE_2D, dem);
@@ -1537,6 +1543,10 @@ export class SkyGL {
     gl.deleteFramebuffer(fb);
     gl.deleteProgram(prog);
     gl.deleteTexture(dem);
+    for (const old of this.maps || []) gl.deleteTexture(old);
+    this.maps = maps;
+    maps.forEach((tex, i) => { gl.activeTexture(gl.TEXTURE4 + i); gl.bindTexture(gl.TEXTURE_2D, tex); });
+    gl.activeTexture(gl.TEXTURE0);
   }
 
   /** The Landscape's program and uniforms, or null until it is ready (it
@@ -1544,14 +1554,48 @@ export class SkyGL {
    *  work, after its frame is out: the compiles (this program and the
    *  maps'), in the background where the browser can
    *  (KHR_parallel_shader_compile), then the maps, a strip between
-   *  frames; onStage is called with where that work is.  t: as for bake. */
+   *  frames; onStage is called with where that work is.  t: as for bake.
+   *
+   *  Where the cut is left to this class, the Landscape comes first
+   *  without the near trees, the largest part of its shader and the
+   *  slowest to draw.  How that went says whether they follow
+   *  (moreTrees, for the caller to call with the time a frame of it
+   *  took at 0.25 px per CSS px, if it has one): the frame under 8 ms,
+   *  and the compile either quick (under 3 s; under 1 s with Direct3D's
+   *  compiler, which takes 3.5 times as long over the trees: 3.9 s and
+   *  13.5 s on the user's laptop) or in the background with the page
+   *  kept going (no 50 ms tick over 0.4 s late).  With the trees
+   *  compiled, onReady is called again. */
   landProgram(t) {
     if (this.land === undefined) {
       this.land = null;
       const { gl } = this;
       const done = (job) => !this.parallel || gl.getProgramParameter(job.prog, this.parallel.COMPLETION_STATUS_KHR);
       const fail = (err) => console.error(`The Landscape failed: ${err.message}`);
-      let t0, land, strips, nStrip = 0;
+      let t0, land, strips, nStrip = 0, last, late = 0;
+      const tick = () => { const now = performance.now(); late = Math.max(late, now - last - 50); last = now; };
+      const trees = (frameMs) => {
+        this.moreTrees = null;
+        if (frameMs > 8) return;
+        if (!(this.compileMs < (/Direct3D/.test(this.renderer()) ? 1000 : 3000) || (this.parallel && late < 400))) return;
+        const t1 = performance.now(), job = start(gl, fragment(1, [])), mapJob = start(gl, mapFragment([]));
+        const strip = () => {                               // the maps again, with the outlines the trees are traced in
+          try {
+            if (!strips.next().done) return setTimeout(strip, 0);
+          } catch (err) { return fail(err); }
+          this.treesMs = performance.now() - t1;
+          this.land = land;
+          this.onReady?.();
+        };
+        const poll = () => {
+          this.onStage?.(`compiling the near trees, ${Math.round((performance.now() - t1) / 1000)} s`);
+          if (!done(job) || !done(mapJob)) return setTimeout(poll, 50);
+          try { land = linked(gl, job); } catch (err) { return fail(err); }
+          strips = this.bake(mapJob, t);
+          strip();
+        };
+        poll();
+      };
       const strip = () => {
         try {
           this.onStage?.(`building the terrain, ${Math.round((100 * ++nStrip) / MAP_NS.reduce((a, n) => a + n / BAKE_ROWS, 0))} %`);
@@ -1559,20 +1603,22 @@ export class SkyGL {
         } catch (err) { return fail(err); }
         this.bakeMs = performance.now() - t0 - this.compileMs;
         this.land = land;
+        if (!this.cut) this.moreTrees = trees;
         this.onReady?.();
       };
       const poll = () => {
+        tick();
         this.onStage?.(`compiling its shaders, ${Math.round((performance.now() - t0) / 1000)} s`);
         if (!done(this.landJob) || !done(this.mapJob)) return setTimeout(poll, 50);
         try { land = linked(gl, this.landJob); } catch (err) { return fail(err); }
         this.compileMs = performance.now() - t0;
-        strips = this.bake(t);
+        strips = this.bake(this.mapJob, t);
         strip();
       };
       setTimeout(() => {
-        t0 = performance.now();
-        this.landJob = start(gl, fragment(1, this.cut));
-        this.mapJob = start(gl, MAP_FRAG);
+        t0 = last = performance.now();
+        this.landJob = start(gl, fragment(1, this.cut ?? ["trees"]));
+        this.mapJob = start(gl, mapFragment(this.cut ?? ["trees"]));
         poll();
       }, 150);
     }

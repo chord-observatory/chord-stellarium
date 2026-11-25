@@ -452,15 +452,15 @@ function govern(dt, now) {
  *  time goes as the pixels), so a slow GPU does not first freeze on a
  *  full-size frame.  govern takes over from there. */
 function landProbe() {
-  if (!windOn) return;
+  if (!windOn) return undefined;
   const sync = () => { gl.sync(); return performance.now(); };
   glScale = RES_PROBE / dpr;
   sizeSky();
   const t0 = performance.now();
   render();
   const t1 = sync();
-  gl.draw(glParams);
-  const ms = sync() - t1;
+  let ms = Infinity;                                    // the least of three: a program's first frames are slow
+  for (let i = 0, ta = t1; i < 3; i++) { gl.draw(glParams); const tb = sync(); ms = Math.min(ms, tb - ta); ta = tb; }
   const r = Math.min(dpr, RES_START, Math.max(RES_MIN, RES_PROBE * Math.sqrt((0.6 * ANIM_MS) / ms)));
   console.info(`Landscape: compiled in ${Math.round(gl.compileMs)} ms, maps built in ${Math.round(gl.bakeMs)} ms, first frame ${Math.round(t1 - t0)} ms, ` +
     `${ms.toFixed(1)} ms a frame at ${RES_PROBE} px, so ${r.toFixed(2)} px; ${gl.renderer()}`);
@@ -469,6 +469,7 @@ function landProbe() {
   windDts.length = 0;
   windSkip = true;
   sizeSky();
+  return ms;
 }
 
 /** Seconds of wind (wall clock, not the page's clock; wraps daily). */
@@ -1096,9 +1097,12 @@ async function main() {
   gl.onStage = (s) => { $("hint").textContent = `Landscape: ${s}`; };
   gl.onReady = () => {                                  // the Landscape can be drawn
     dirty = true;
-    landProbe();
-    $("hint").textContent = `Landscape ready: shaders ${(gl.compileMs / 1000).toFixed(1)} s, terrain ${(gl.bakeMs / 1000).toFixed(1)} s, on ${gl.renderer()}`;
-    setTimeout(() => { $("hint").textContent = hint; }, 20000);
+    const more = gl.moreTrees, ms = landProbe();
+    if (more) setTimeout(() => more(ms), 300);            // the near trees, if this machine can take them
+    $("hint").textContent = `Landscape ready: shaders ${(gl.compileMs / 1000).toFixed(1)} s, terrain ${(gl.bakeMs / 1000).toFixed(1)} s` +
+      `${gl.treesMs ? `, near trees ${(gl.treesMs / 1000).toFixed(1)} s` : ""}, on ${gl.renderer()}`;
+    clearTimeout(gl.onReady.timer);
+    gl.onReady.timer = setTimeout(() => { $("hint").textContent = hint; }, 20000);
   };
   overlay = new Overlay($("ov"));
   trace = new Trace($("trace"), img, skyMeta);
