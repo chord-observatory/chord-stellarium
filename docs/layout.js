@@ -54,6 +54,16 @@ export const CONTAINERS = [
   { at: [-68.0, -42.0], half: [3.03, 1.22], full: true }, { at: [-68.0, 51.5], half: [3.03, 1.22], full: true },
 ];
 
+/** CHIME: four cylinders, 20 m across and 100 m long, their axes north-
+ *  south, focal lines 22 m apart (site frame), from the user's site plan;
+ *  f = 5 m. */
+export const CHIME = { at: [[-234.3, -0.4], [-212.5, -0.4], [-190.6, -0.4], [-168.8, -0.4]], half: [10, 50], f: 5 };
+
+/** The John A. Galt 26 m dish: its pedestal's middle (site frame), from
+ *  OpenStreetMap (node; the site plan agrees to 2 m).  Drawn stowed at
+ *  the zenith (user: any pose). */
+export const GALT = { at: [46.1, 16.9], D: 26 };
+
 /** Paved ground (site frame): the laboratory's car park and the Galt
  *  dish's pad (asphalt), from the user's site plan; the drive east of
  *  the buildings. */
@@ -80,6 +90,8 @@ export function siteModels(full) {
     containers: CONTAINERS.filter((c) => full || !c.full).map((c) => ({ at: toEye(c.at), half: c.half })),
     paved: PAVED.map(pts),
     roads: ROADS.map((r) => ({ width: r.width, pts: pts(r.pts) })),
+    chime: { ...CHIME, at: CHIME.at.map(toEye) },
+    galt: { ...GALT, at: toEye(GALT.at) },
   };
 }
 

@@ -1,6 +1,7 @@
 // The things built on the site, drawn as triangle meshes in WebGL on their
-// own canvas between the sky and the overlay: the CHORD dishes, the
-// buildings and containers, and the paving (layout.js).  The shader is
+// own canvas between the sky and the overlay: the CHORD dishes, CHIME's
+// cylinders, the Galt 26 m dish, the buildings and containers, and the
+// paving (layout.js).  The shader is
 // small, so it compiles at once anywhere (the sky's is the slow one); the
 // meshes are cheap to draw.  Nothing here is hidden by the terrain (the
 // site is level and kept clear of trees), so the paving lies on this
@@ -25,7 +26,8 @@ const STRIDE = 9;                         // floats per vertex: position, normal
 
 // Materials: 0 the bowl (its inside and outside), 1 white paint (the
 // dish's box, containers), 2 steel, 3 the rim, 4 wall, 5 flat roof,
-// 6 asphalt.
+// 6 asphalt, 7 wire-mesh reflector (seen through: drawn last, part
+// transparent), 8 white steel.
 const VERT = `
 attribute vec3 aPos;      // m east, north, up of the dish's foot
 attribute vec3 aNorm;
@@ -56,6 +58,8 @@ precision highp float;
 uniform vec3 uSun, uMoon, uSunLin, uAmbLin, uMoonLin;
 uniform float uStrength, uCloud;
 uniform float uShadowA;   // a shadow: how much it darkens what is below
+uniform float uPass;      // 0: all but the wire mesh; 1: the wire mesh only
+const float MESH_A = 0.55; // how much of the light a wire-mesh reflector stops
 uniform vec3 uSl;         // the Sun in the bowl's frame (u, w, axis)
 varying vec3 vPos, vNorm;
 varying float vMat;
@@ -79,6 +83,7 @@ void main() {
   if (uShadowA > 0.0) { gl_FragColor = vec4(0.0, 0.0, 0.0, uShadowA); return; }
   vec3 view = normalize(-vPos), n = normalize(vNorm);
   int mat = int(vMat + 0.5);
+  if ((mat == 7) != (uPass > 0.5)) discard;
   vec3 col;
   if (mat == 0) {
     bool inside = dot(n, view) > 0.0;                     // n is the bowl's inward normal
@@ -99,8 +104,10 @@ void main() {
     if (dot(n, view) < 0.0) n = -n;
     vec3 alb = mat == 1 ? vec3(0.8) : mat == 2 ? vec3(0.3) : mat == 3 ? vec3(0.9) : mat == 4 ? vec3(0.62, 0.58, 0.5)
       : mat == 5 ? vec3(0.46, 0.45, 0.42) * (0.93 + 0.14 * grain(vPos.xy, 8.0))                     // gravel on the roof
-      : vec3(0.15, 0.15, 0.15) * (0.9 + 0.2 * grain(vPos.xy, 3.0));                               // asphalt
+      : mat == 6 ? vec3(0.15, 0.15, 0.15) * (0.9 + 0.2 * grain(vPos.xy, 3.0))                     // asphalt
+      : mat == 7 ? vec3(0.42, 0.43, 0.45) : vec3(0.86);
     col = shade(alb, n, uCloud, 0.0);
+    if (mat == 7) { gl_FragColor = vec4(col * MESH_A, MESH_A); return; }
   }
   gl_FragColor = vec4(col, 1.0);
 }`;
@@ -211,6 +218,77 @@ function buildingMesh(pts, h) {
   return new Float32Array(M.v);
 }
 
+/** A tapered post: a square of half side r0 at z0 to r1 at z1, about x, y. */
+function frustum(M, x, y, z0, z1, r0, r1, mat) {
+  const c = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+  for (let k = 0; k < 4; k++) {
+    const [a, b] = [c[k], c[(k + 1) % 4]];
+    M.quad([x + a[0] * r0, y + a[1] * r0, z0], [x + b[0] * r0, y + b[1] * r0, z0], [x + b[0] * r1, y + b[1] * r1, z1], [x + a[0] * r1, y + a[1] * r1, z1], mat);
+  }
+  M.quad([x - r1, y - r1, z1], [x + r1, y - r1, z1], [x + r1, y + r1, z1], [x - r1, y + r1, z1], mat);
+}
+
+/** A CHIME cylinder, its middle at the origin, its axis north-south: a
+ *  wire-mesh parabolic trough (half width hw, half length hl, focal
+ *  length f) on white steel arcs every 5 m, posts under them, A-frames
+ *  every 10 m carrying the walkway along the focal line, with railings
+ *  (as the user's photograph). */
+function chimeMesh(hw, hl, f) {
+  const M = new Mesh(), z0 = 1.0, zf = z0 + f, zAt = (x) => z0 + (x * x) / (4 * f);
+  const NX = 16, NY = 10;
+  for (let i = 0; i < NX; i++) for (let j = 0; j < NY; j++) {
+    const x = [i, i + 1].map((k) => -hw + (2 * hw * k) / NX), y = [j, j + 1].map((k) => -hl + (2 * hl * k) / NY);
+    const P = (a, b) => [x[a], y[b], zAt(x[a])], nn = (a) => norm([-x[a] / (2 * f), 0, 1]);
+    for (const t of [[[0, 0], [1, 0], [1, 1]], [[0, 0], [1, 1], [0, 1]]]) for (const [a, b] of t) M.vert(P(a, b), nn(a), 7);
+  }
+  for (let y = -hl; y <= hl + 0.01; y += 5) {
+    for (let k = 0; k < 8; k++) {
+      const xa = -hw + (2 * hw * k) / 8, xb = -hw + (2 * hw * (k + 1)) / 8;
+      M.beam([xa, y, zAt(xa) - 0.15], [xb, y, zAt(xb) - 0.15], 0.14, 8);
+    }
+    for (const x of [-8, -4, 0, 4, 8]) M.beam([x, y, 0], [x, y, zAt(x) - 0.15], 0.1, 8);
+  }
+  for (const x of [-hw, -hw / 2, 0, hw / 2, hw]) M.beam([x, -hl, zAt(x) - 0.2], [x, hl, zAt(x) - 0.2], 0.12, 8);
+  for (let y = -hl; y <= hl + 0.01; y += 10) for (const s of [-1, 1]) M.beam([s * 6, y, 0], [s * 0.4, y, zf], 0.22, 8);
+  for (const x of [-0.5, 0.5]) {
+    M.beam([x, -hl, zf], [x, hl, zf], 0.2, 8);
+    M.beam([x, -hl, zf + 1.0], [x, hl, zf + 1.0], 0.06, 8);
+    for (let y = -hl; y <= hl + 0.01; y += 2.5) M.beam([x, y, zf], [x, y, zf + 1.0], 0.05, 8);
+  }
+  M.quad([-0.5, -hl, zf + 0.1], [0.5, -hl, zf + 0.1], [0.5, hl, zf + 0.1], [-0.5, hl, zf + 0.1], 2);
+  return new Float32Array(M.v);
+}
+
+/** The Galt 26 m dish, its pedestal's middle at the origin: a tapered
+ *  white tower, the mount, and the dish stowed at the zenith: a wire-mesh
+ *  paraboloid (f/D 0.3) on white radial ribs and rings, the feed on four
+ *  legs; a small hut at the foot (as the user's photograph). */
+function galtMesh(D) {
+  const M = new Mesh(), R = D / 2, f = 0.3 * D, zv = 17, NR = 8, NS = 48;
+  frustum(M, 0, 0, 0, 12, 3.6, 1.9, 1);
+  M.box([0, 0, 14], [2.6, 0, 0], [0, 1.6, 0], [0, 0, 2], 1);
+  const surf = (r, phi) => [r * Math.cos(phi), r * Math.sin(phi), zv + (r * r) / (4 * f)];
+  const nUp = (r, phi) => norm([(-r / (2 * f)) * Math.cos(phi), (-r / (2 * f)) * Math.sin(phi), 1]);
+  for (let i = 0; i < NR; i++) for (let j = 0; j < NS; j++) {
+    const r = [i, i + 1].map((k) => (k / NR) * R), ph = [j, j + 1].map((k) => (k / NS) * 2 * Math.PI);
+    for (const t of [[[0, 0], [1, 0], [1, 1]], [[0, 0], [1, 1], [0, 1]]]) for (const [a, b] of t) M.vert(surf(r[a], ph[b]), nUp(r[a], ph[b]), 7);
+  }
+  for (let j = 0; j < 24; j++) {
+    const phi = (j / 24) * 2 * Math.PI;
+    for (let k = 0; k < 6; k++) M.beam(add(surf((k / 6) * R, phi), [0, 0, -0.35], 1), add(surf(((k + 1) / 6) * R, phi), [0, 0, -0.35], 1), 0.18, 8);
+  }
+  for (const rr of [0.35, 0.7, 1]) for (let j = 0; j < 36; j++) {
+    const a = (j / 36) * 2 * Math.PI, b = ((j + 1) / 36) * 2 * Math.PI;
+    M.beam(add(surf(rr * R, a), [0, 0, -0.3], 1), add(surf(rr * R, b), [0, 0, -0.3], 1), 0.16, 8);
+  }
+  const Fz = zv + f;
+  for (let j = 0; j < 4; j++) M.beam(surf(0.6 * R, (j / 4) * 2 * Math.PI + Math.PI / 4), [0, 0, Fz - 0.6], 0.16, 8);
+  M.box([0, 0, Fz - 0.3], [0.5, 0, 0], [0, 0.5, 0], [0, 0, 0.5], 1);
+  M.box([0, 0, zv - 0.6], [2.2, 0, 0], [0, 2.2, 0], [0, 0, 0.8], 1);
+  M.box([-6.5, -1, 1.5], [2.5, 0, 0], [0, 2, 0], [0, 0, 1.5], 1);
+  return new Float32Array(M.v);
+}
+
 /** A shipping container, its foot's middle at the origin. */
 function containerMesh(hx, hy) {
   const M = new Mesh();
@@ -262,12 +340,15 @@ export class Models {
   siteMeshes(site, full) {
     if (this.site?.full === full) return this.site;
     const { gl } = this;
-    for (const it of [...(this.site?.solids || []), ...(this.site?.paved || [])]) gl.deleteBuffer(it.m.buf);
+    for (const m of new Set([...(this.site?.solids || []), ...(this.site?.paved || [])].map((it) => it.m))) gl.deleteBuffer(m.buf);
     const mid = (pts) => [pts.reduce((s, q) => s + q[0], 0) / pts.length, pts.reduce((s, q) => s + q[1], 0) / pts.length];
     const solids = [
       ...site.buildings.map((b) => ({ m: this.upload(buildingMesh(b.pts, b.h)), at: [0, 0], c: mid(b.pts) })),
       ...site.containers.map((c) => ({ m: this.upload(containerMesh(c.half[0], c.half[1])), at: c.at, c: c.at })),
     ];
+    const ch = site.chime, chime = this.upload(chimeMesh(ch.half[0], ch.half[1], ch.f));
+    solids.push(...ch.at.map((at) => ({ m: chime, at, c: at, veil: 0.6 })));
+    solids.push({ m: this.upload(galtMesh(site.galt.D)), at: site.galt.at, c: site.galt.at, veil: 0.6 });
     const paved = site.paved.map((pts) => ({ m: this.upload(pavedMesh(pts)), at: [0, 0], c: mid(pts) }));
     for (const r of site.roads) {
       // A strip per stretch, each a little longer than its stretch to close the bends.
@@ -333,6 +414,7 @@ export class Models {
     gl.depthMask(false);
     gl.uniform1f(u.uFlat, 0);
     gl.uniform1f(u.uShadowA, 0);
+    gl.uniform1f(u.uPass, 0);
     for (const it of site.paved) put(it.m, it.at, it.cloud);
 
     // The shadows: each pixel darkened once (the stencil), by what the
@@ -346,7 +428,7 @@ export class Models {
       gl.stencilOp(gl.KEEP, gl.KEEP, gl.INCR);
       gl.uniform1f(u.uFlat, 1);
       for (const it of [...site.solids, ...dishes]) {
-        gl.uniform1f(u.uShadowA, Math.min(0.8, fade * (1 - look(amb) / look(amb + sun * it.cloud))) + 1e-4);
+        gl.uniform1f(u.uShadowA, Math.min(0.8, fade * (it.veil ?? 1) * (1 - look(amb) / look(amb + sun * it.cloud))) + 1e-4);
         put(it.m === meshes[0] ? meshes[1] : it.m, it.at, it.cloud);
       }
       gl.disable(gl.STENCIL_TEST);
@@ -354,10 +436,16 @@ export class Models {
       gl.uniform1f(u.uShadowA, 0);
     }
 
-    // The buildings, containers and dishes.
+    // The buildings, containers and dishes; then again the wire mesh
+    // (material 7), seen through, over what is behind it.
     gl.enable(gl.DEPTH_TEST);
     gl.depthMask(true);
+    gl.uniform1f(u.uPass, 0);
     for (const it of [...site.solids, ...dishes]) put(it.m, it.at, it.cloud);
+    gl.depthMask(false);
+    gl.uniform1f(u.uPass, 1);
+    for (const it of site.solids) if (it.veil) put(it.m, it.at, it.cloud);
+    gl.depthMask(true);
   }
 
   upload(data) {
