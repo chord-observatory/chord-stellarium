@@ -635,7 +635,8 @@ float cloudShade(vec2 P) {
 
 // The bunchgrass standing at Q (m): its height, 0..1 of GRASS.
 float grassH(vec2 Q) {
-  float bunch = smoothstep(0.3, 0.58, noise(Q * 6.0));
+  float m = 0.6 * noise(mat2(0.6, 0.8, -0.8, 0.6) * Q * 4.5) + 0.4 * noise(mat2(-0.5, 0.87, -0.87, -0.5) * Q * 10.0 + 31.0);   // two grids at odd angles: no lattice from above
+  float bunch = smoothstep(0.24, 0.56, m);
   return bunch * (0.3 + 0.7 * noise(mat2(0.8, 0.6, -0.6, 0.8) * Q * 41.0));
 }
 
@@ -1039,7 +1040,8 @@ vec3 groundAt(vec3 e, float t, float pix) {
     // in the grass the ray stops (0 the soil .. 1); Q: where; fl: 0, 0.5 on
     // a flower's stem, 1 on its head (flCol: the head's colour there); lit:
     // sunlight past the bunches next to it.
-    float f = grassH(P) * near + 0.34 * (1.0 - near), fl = 0.0, lit = 1.0;
+    float bunched = near * clamp(2.0 - lod * 20.0, 0.0, 1.0);        // the bunches fade before they are under two pixels
+    float f = grassH(P) * bunched + 0.34 * (1.0 - bunched), fl = 0.0, lit = 1.0;
     vec2 Q = P;
     vec3 flCol = vec3(0.0);
     float k = clamp(1.6 - t / 30.0, 0.0, 1.0) * step(0.5, grassy);
@@ -1147,7 +1149,7 @@ vec3 groundAt(vec3 e, float t, float pix) {
     float fine = mix(0.5, noise(Q * 31.0), clamp(1.5 - lod * 60.0, 0.0, 1.0));
     vec3 straw = strawAt(P, Q, lod, near, slope, fine);
     straw = mix(straw, straw * 1.35 + vec3(0.03, 0.03, 0.02), sheen * 0.6 * smoothstep(0.3, 0.9, f));   // gusts show the pale side
-    vec3 soil = mix(vec3(0.33, 0.28, 0.21), straw * 0.7, smoothstep(0.45, 0.7, noise(Q * 19.0 + 7.0)) * near);   // soil and litter
+    vec3 soil = mix(vec3(0.33, 0.28, 0.21), straw * 0.7, smoothstep(0.45, 0.7, noise(mat2(0.8, -0.6, 0.6, 0.8) * Q * 19.0 + 7.0)) * near);   // soil and litter
     vec3 alb = mix(soil, straw, smoothstep(0.0, 0.2, f));
     float ao = 0.58 + 0.42 * smoothstep(0.0, 0.7, f);
     if (fl > 0.9) {
